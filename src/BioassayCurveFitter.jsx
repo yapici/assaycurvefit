@@ -787,6 +787,15 @@ export default function BioassayCurveFitter() {
   const [bgEnabled, setBgEnabled] = useState(false);
   const [bgStats, setBgStats] = useState(null); // { mean, sd, n, values }
   const [theme, setTheme] = useState("dark"); // "dark" or "light"
+  const [isMobile, setIsMobile] = useState(false);
+
+  // Responsive breakpoint
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   // Theme color palettes
   const t = useMemo(() => {
@@ -1386,7 +1395,7 @@ export default function BioassayCurveFitter() {
       background: t.bg,
       color: t.text,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
-      padding: "24px",
+      padding: isMobile ? "12px" : "24px",
       transition: "background 0.3s, color 0.3s",
     }}>
       <style>{`
@@ -1396,14 +1405,19 @@ export default function BioassayCurveFitter() {
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: ${t.scrollTrack}; }
         ::-webkit-scrollbar-thumb { background: ${t.scrollThumb}; border-radius: 3px; }
+        html, body { overflow-x: hidden; }
+        @media (max-width: 767px) {
+          textarea { font-size: 11px !important; }
+          select { font-size: 11px !important; }
+        }
       `}</style>
 
       {/* Header */}
-      <div style={{ maxWidth: 1200, margin: "0 auto 24px", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto 24px", display: "flex", justifyContent: "space-between", alignItems: isMobile ? "center" : "flex-start", flexWrap: "wrap", gap: 12 }}>
         <div>
           <h1 style={{
             fontFamily: "'Space Grotesk', sans-serif",
-            fontSize: 28,
+            fontSize: isMobile ? 22 : 28,
             fontWeight: 700,
             background: "linear-gradient(135deg, #3b9eff, #a855f7, #00e6b4)",
             WebkitBackgroundClip: "text",
@@ -1438,9 +1452,9 @@ export default function BioassayCurveFitter() {
         </button>
       </div>
 
-      <div style={{ maxWidth: 1200, margin: "0 auto", display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, alignItems: "start" }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto", display: "grid", gridTemplateColumns: isMobile ? "1fr" : "340px 1fr", gap: 20, alignItems: "start" }}>
         {/* Left Panel */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, order: isMobile ? 2 : 1 }}>
           {/* Data Input */}
           <div style={{
             background: t.panel,
@@ -1941,7 +1955,7 @@ export default function BioassayCurveFitter() {
         </div>
 
         {/* Right Panel - Charts */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, order: isMobile ? 1 : 2 }}>
           <div style={{
             background: t.panel,
             border: `1px solid ${t.panelBorder}`,
@@ -2012,7 +2026,7 @@ export default function BioassayCurveFitter() {
                 ref={mainCanvasRef}
                 style={{
                   width: "100%",
-                  height: showResiduals ? 340 : 480,
+                  height: isMobile ? (showResiduals ? 240 : 320) : (showResiduals ? 340 : 480),
                   borderRadius: 6,
                   cursor: "crosshair",
                 }}
@@ -2051,7 +2065,7 @@ export default function BioassayCurveFitter() {
                 ref={residCanvasRef}
                 style={{
                   width: "100%",
-                  height: 140,
+                  height: isMobile ? 100 : 140,
                   borderRadius: 6,
                 }}
               />
@@ -2119,6 +2133,7 @@ export default function BioassayCurveFitter() {
                     padding: "6px 10px", marginBottom: 10, borderRadius: 6,
                     background: grubbsResults.totalOutliers > 0 ? "rgba(255,80,106,0.08)" : "rgba(0,230,180,0.06)",
                     border: `1px solid ${grubbsResults.totalOutliers > 0 ? "rgba(255,80,106,0.15)" : "rgba(0,230,180,0.15)"}`,
+                    flexWrap: "wrap", gap: 6,
                   }}>
                     <span style={{ fontSize: 10, color: grubbsResults.totalOutliers > 0 ? "#ff6b8a" : "#00e6b4" }}>
                       {grubbsResults.totalOutliers > 0
@@ -2151,9 +2166,9 @@ export default function BioassayCurveFitter() {
                   </div>
 
                   {/* Concentration group list */}
-                  <div style={{ display: "flex", gap: 10 }}>
+                  <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: 10 }}>
                     {/* Left: clickable concentration list */}
-                    <div style={{ minWidth: 120, maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+                    <div style={{ minWidth: isMobile ? "auto" : 120, maxHeight: isMobile ? 150 : 260, overflowY: "auto", display: "flex", flexDirection: isMobile ? "row" : "column", flexWrap: isMobile ? "wrap" : "nowrap", gap: 2 }}>
                       {grubbsResults.groupResults.map((g, gi) => {
                         const key = g.x.toString();
                         const isSelected = selectedGrubbsGroup === key;
