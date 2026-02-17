@@ -198,6 +198,24 @@ function computeBIC(n, k, ssr) {
   return n * Math.log(ssr / n) + k * Math.log(n);
 }
 
+// Compute biological EC50 for 5PL: concentration where response = (Top + Bottom) / 2
+function computeBiologicalEC50(modelFn, params) {
+  const [Bottom, Hill, EC50, Top, S] = params;
+  const targetY = (Top + Bottom) / 2;
+  // Bisection in log-space
+  let lo = 1e-15, hi = 1e15;
+  const yLo = modelFn(lo, params);
+  const yHi = modelFn(hi, params);
+  const increasing = yHi > yLo;
+  for (let i = 0; i < 100; i++) {
+    const mid = Math.sqrt(lo * hi);
+    const yMid = modelFn(mid, params);
+    if ((increasing && yMid > targetY) || (!increasing && yMid < targetY)) hi = mid;
+    else lo = mid;
+  }
+  return Math.sqrt(lo * hi);
+}
+
 // Fit a single model with multi-start, return full stats
 function fitModel(xData, yData, modelFn, is5PL) {
   const init = estimateInitialParams(xData, yData, is5PL);
@@ -225,7 +243,10 @@ function fitModel(xData, yData, modelFn, is5PL) {
   const bic = computeBIC(n, k, best.ssr);
   const aic = computeAIC(n, k, best.ssr);
 
-  return { ...best, r2, rmse, yPred, aicc, bic, aic, k, n };
+  // Biological EC50 for 5PL (differs from parametric EC50 when S ≠ 1)
+  const bioEC50 = is5PL ? computeBiologicalEC50(modelFn, best.params) : null;
+
+  return { ...best, r2, rmse, yPred, aicc, bic, aic, k, n, bioEC50 };
 }
 
 // Group replicate data by concentration, compute stats
@@ -534,6 +555,30 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
         ctx.font = "10px 'JetBrains Mono', monospace";
         ctx.textAlign = "left";
         ctx.fillText(`EC50: ${ec50.toExponential(3)}`, cx + 10, cy - 8);
+      }
+    }
+
+    // Biological EC50 for 5PL
+    if (modelType === "5PL" && fitResult.bioEC50) {
+      const bioEc50 = fitResult.bioEC50;
+      if (bioEc50 > 0) {
+        const lbec50 = Math.log10(bioEc50);
+        if (lbec50 >= xMin && lbec50 <= xMax) {
+          const midY = modelFn(bioEc50, fitResult.params);
+          const bx = toCanvasX(lbec50), by = toCanvasY(midY);
+          ctx.setLineDash([2, 3]);
+          ctx.strokeStyle = (t.tealGlow || "rgba(0,230,180,") + "0.4)";
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(bx, pad.top); ctx.lineTo(bx, pad.top + plotH); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(pad.left, by); ctx.lineTo(pad.left + plotW, by); ctx.stroke();
+          ctx.setLineDash([]);
+
+          ctx.fillStyle = t.teal || "#00e6b4";
+          ctx.beginPath(); ctx.arc(bx, by, 4, 0, Math.PI * 2); ctx.fill();
+          ctx.font = "9px 'JetBrains Mono', monospace";
+          ctx.textAlign = "left";
+          ctx.fillText(`Bio EC50: ${bioEc50.toExponential(3)}`, bx + 10, by + 14);
+        }
       }
     }
   }
@@ -1740,6 +1785,35 @@ export default function BioassayCurveFitter() {
                   </span>
                 </div>
               ))}
+
+              {/* Biological EC50 for 5PL */}
+              {activeModel === "5PL" && fitResult.bioEC50 && (
+                <div style={{
+                  marginTop: 8,
+                  padding: "8px 0",
+                  borderTop: `1px solid ${t.panelBorder}`,
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ fontSize: 10, color: t.labelDim }}>Parametric EC50</span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: t.orange }}>
+                      {fitResult.params[2] < 0.01 || fitResult.params[2] > 10000
+                        ? fitResult.params[2].toExponential(3)
+                        : fitResult.params[2].toPrecision(4)}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 10, color: t.labelDim }}>Biological EC50</span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: t.teal }}>
+                      {fitResult.bioEC50 < 0.01 || fitResult.bioEC50 > 10000
+                        ? fitResult.bioEC50.toExponential(3)
+                        : fitResult.bioEC50.toPrecision(4)}
+                    </span>
+                  </div>
+                  <p style={{ fontSize: 8, color: t.textDim, marginTop: 4 }}>
+                    Biological EC50 = concentration at half-maximal response
+                  </p>
+                </div>
+              )}
 
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${t.panelBorder}` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
