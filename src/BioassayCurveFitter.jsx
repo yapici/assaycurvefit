@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 
 // ── Numerical Engine ──────────────────────────────────────────────
 // 4PL: y = D + (A - D) / (1 + (x/C)^B)
-// 5PL: y = D + (A - D) / (1 + (x/C)^B)^E
+// 5PL: y = Bottom + (Top - Bottom) / (1 + (EC50/x)^Hill)^S
 
 function model4PL(x, params) {
   const [A, B, C, D] = params;
@@ -11,9 +11,9 @@ function model4PL(x, params) {
 }
 
 function model5PL(x, params) {
-  const [A, B, C, D, E] = params;
-  if (x <= 0) return A;
-  return D + (A - D) / Math.pow(1 + Math.pow(x / C, B), E);
+  const [Bottom, Hill, EC50, Top, S] = params;
+  if (x <= 0) return Bottom;
+  return Bottom + (Top - Bottom) / Math.pow(1 + Math.pow(EC50 / x, Hill), S);
 }
 
 function residuals(xData, yData, modelFn, params) {
@@ -167,7 +167,8 @@ function estimateInitialParams(xData, yData, is5PL = false) {
   if (C <= 0) C = sortedX[Math.floor(sortedX.length / 2)] || 1;
 
   const B = A > D ? 1 : -1;
-  if (is5PL) return [A, B, C, D, 1];
+  // 5PL uses (EC50/x) instead of (x/C), so Hill slope sign is flipped vs 4PL
+  if (is5PL) return [A, A > D ? -1 : 1, C, D, 1];
   return [A, B, C, D];
 }
 
@@ -441,7 +442,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
   const toCanvasY = (y) => pad.top + ((yMax - y) / (yMax - yMin)) * plotH;
 
   // Store coordinate metadata on canvas for tooltip hit-testing
-  canvas._chartMeta = { pad, plotW, plotH, xMin, xMax, yMin, yMax, W, H, toCanvasX, toCanvasY };
+  canvas._chartMeta = { pad, plotW, plotH, xMin, xMax, yMin, yMax, W, H, toCanvasX, toCanvasY, errorBarGroups: [] };
 
   // Background
   ctx.fillStyle = "#0a0f1a";
@@ -537,19 +538,37 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
   }
 
   // Data points
+  const errorBarGroups = []; // collected for tooltip hit-testing
   if (pointView === "errorbars") {
-    // Error bar view: mean ± SD or SEM per concentration
+    // Error bar view: mean ± SD or SEM per concentration, excluding excluded points
     grouped.forEach((g) => {
       if (g.x <= 0) return;
+      // Filter out excluded indices
+      const activeVals = [];
+      g.indices.forEach((idx, j) => {
+        if (!exclSet || !exclSet.has(idx)) activeVals.push(g.values[j]);
+      });
+      if (activeVals.length === 0) return;
+      const n = activeVals.length;
+      const nTotal = g.n;
+      const mean = activeVals.reduce((a, b) => a + b, 0) / n;
+      const variance = n > 1 ? activeVals.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1) : 0;
+      const sd = Math.sqrt(variance);
+      const sem = n > 1 ? sd / Math.sqrt(n) : 0;
+      const cv = mean !== 0 ? (sd / Math.abs(mean)) * 100 : 0;
+
       const lx = Math.log10(g.x);
       const cx = toCanvasX(lx);
-      const cyMean = toCanvasY(g.mean);
-      const errVal = errorBarType === "sem" ? g.sem : g.sd;
-      const cyHi = toCanvasY(g.mean + errVal);
-      const cyLo = toCanvasY(g.mean - errVal);
+      const cyMean = toCanvasY(mean);
+      const errVal = errorBarType === "sem" ? sem : sd;
+      const cyHi = toCanvasY(mean + errVal);
+      const cyLo = toCanvasY(mean - errVal);
+
+      // Store for tooltip
+      errorBarGroups.push({ x: g.x, cx, cyMean, mean, sd, sem, cv, n, nTotal, errVal, errorBarType });
 
       // Error bar line
-      if (g.n > 1) {
+      if (n > 1) {
         ctx.strokeStyle = "rgba(0,230,180,0.55)";
         ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.moveTo(cx, cyHi); ctx.lineTo(cx, cyLo); ctx.stroke();
@@ -571,14 +590,6 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
       ctx.strokeStyle = "rgba(0,230,180,0.6)";
       ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(cx, cyMean, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-
-      // n label
-      if (g.n > 1) {
-        ctx.fillStyle = "rgba(160,190,230,0.35)";
-        ctx.font = "8px 'JetBrains Mono', monospace";
-        ctx.textAlign = "left";
-        ctx.fillText(`n=${g.n}`, cx + 8, cyMean + 3);
-      }
     });
   } else {
     // Individual points view
@@ -631,6 +642,9 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
       }
     });
   }
+
+  // Attach error bar groups to meta for tooltip
+  canvas._chartMeta.errorBarGroups = errorBarGroups;
 }
 
 // ── Residuals chart ───────────────────────────────────────────────
@@ -890,14 +904,14 @@ export default function BioassayCurveFitter() {
         // Compare using AICc (preferred for small n) and BIC
         const deltaAICc = fit4.aicc - fit5.aicc; // positive => 5PL better
         const deltaBIC = fit4.bic - fit5.bic;
-        // Check if 5PL E parameter is close to 1 (meaning 5PL collapses to 4PL)
+        // Check if 5PL S parameter is close to 1 (meaning 5PL collapses to 4PL)
         const eParam = fit5.params[4];
         const eNearOne = Math.abs(eParam - 1) < 0.05;
 
         let selected, reason;
         if (eNearOne) {
           selected = "4PL";
-          reason = `5PL asymmetry parameter E≈${eParam.toFixed(3)} (near 1.0); extra parameter not justified`;
+          reason = `5PL asymmetry parameter S≈${eParam.toFixed(3)} (near 1.0); extra parameter not justified`;
         } else if (deltaAICc > 2 && deltaBIC > 0) {
           selected = "5PL";
           reason = `5PL preferred: ΔAICc=${deltaAICc.toFixed(1)} (>2 threshold), ΔBIC=${deltaBIC.toFixed(1)}`;
@@ -989,22 +1003,33 @@ export default function BioassayCurveFitter() {
       const logXMouse = xMin + (mx - pad.left) / plotW * (xMax - xMin);
       const yMouse = yMax - (my - pad.top) / plotH * (yMax - yMin);
 
-      // Check proximity to data points first (within 12px)
       let nearestDist = Infinity;
       let nearestInfo = null;
       const hitRadius = 12;
 
-      parsedData.xData.forEach((x, i) => {
-        if (x <= 0) return;
-        const lx = Math.log10(x);
-        const cx = meta.toCanvasX(lx);
-        const cy = meta.toCanvasY(parsedData.yData[i]);
-        const dist = Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2);
-        if (dist < hitRadius && dist < nearestDist) {
-          nearestDist = dist;
-          nearestInfo = { type: "point", x, y: parsedData.yData[i], index: i };
+      // In error bar mode, check proximity to aggregated group points
+      if (pointView === "errorbars" && meta.errorBarGroups && meta.errorBarGroups.length > 0) {
+        for (const g of meta.errorBarGroups) {
+          const dist = Math.sqrt((mx - g.cx) ** 2 + (my - g.cyMean) ** 2);
+          if (dist < 16 && dist < nearestDist) {
+            nearestDist = dist;
+            nearestInfo = { type: "errorbar", group: g };
+          }
         }
-      });
+      } else {
+        // Check proximity to individual data points (within 12px)
+        parsedData.xData.forEach((x, i) => {
+          if (x <= 0) return;
+          const lx = Math.log10(x);
+          const cx = meta.toCanvasX(lx);
+          const cy = meta.toCanvasY(parsedData.yData[i]);
+          const dist = Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2);
+          if (dist < hitRadius && dist < nearestDist) {
+            nearestDist = dist;
+            nearestInfo = { type: "point", x, y: parsedData.yData[i], index: i };
+          }
+        });
+      }
 
       // If no data point nearby, show curve value
       if (!nearestInfo && fitResult) {
@@ -1018,25 +1043,54 @@ export default function BioassayCurveFitter() {
       }
 
       if (nearestInfo) {
-        const fmtX = nearestInfo.x < 0.01 || nearestInfo.x >= 10000
-          ? nearestInfo.x.toExponential(3) : nearestInfo.x.toPrecision(4);
-        const fmtY = Math.abs(nearestInfo.y) < 0.01 || Math.abs(nearestInfo.y) >= 100000
-          ? nearestInfo.y.toExponential(3) : nearestInfo.y.toFixed(1);
-
-        let label = nearestInfo.type === "curve" ? "Fit" : "Data";
-        tooltip.innerHTML = `<span style="color:${nearestInfo.type === "curve" ? (activeModel === "4PL" ? "#3b9eff" : "#a855f7") : "#00e6b4"}">${label}</span>&nbsp; x: ${fmtX}&nbsp; y: ${fmtY}`;
-        
-        // Position tooltip near cursor but keep within bounds
         const containerRect = chartContainerRef.current ? chartContainerRef.current.getBoundingClientRect() : rect;
-        let tx = e.clientX - containerRect.left + 14;
-        let ty = e.clientY - containerRect.top - 28;
-        // Clamp to container
-        const tw = tooltip.offsetWidth || 160;
-        if (tx + tw > containerRect.width - 8) tx = e.clientX - containerRect.left - tw - 10;
-        if (ty < 4) ty = 4;
-        tooltip.style.left = tx + "px";
-        tooltip.style.top = ty + "px";
-        tooltip.style.display = "block";
+
+        if (nearestInfo.type === "errorbar") {
+          const g = nearestInfo.group;
+          const fmtX = g.x < 0.01 || g.x >= 10000 ? g.x.toExponential(3) : g.x.toPrecision(4);
+          const fmtMean = Math.abs(g.mean) < 0.01 || Math.abs(g.mean) >= 100000 ? g.mean.toExponential(4) : g.mean.toFixed(1);
+          const fmtSD = g.sd < 0.01 ? g.sd.toExponential(2) : g.sd < 100 ? g.sd.toFixed(2) : g.sd.toFixed(0);
+          const fmtSEM = g.sem < 0.01 ? g.sem.toExponential(2) : g.sem < 100 ? g.sem.toFixed(2) : g.sem.toFixed(0);
+          const cvColor = g.cv > 20 ? "#ff6b8a" : g.cv > 10 ? "#ffb432" : "#00e6b4";
+          const nLabel = g.n < g.nTotal ? `${g.n}/${g.nTotal}` : `${g.n}`;
+
+          tooltip.innerHTML = [
+            `<div style="color:#00e6b4;font-weight:600;margin-bottom:3px">Conc: ${fmtX}</div>`,
+            `<div style="display:grid;grid-template-columns:auto auto;gap:1px 10px;font-size:9px">`,
+            `<span style="color:rgba(160,190,230,0.5)">Mean</span><span>${fmtMean}</span>`,
+            `<span style="color:rgba(160,190,230,0.5)">SD</span><span>±${fmtSD}</span>`,
+            `<span style="color:rgba(160,190,230,0.5)">SEM</span><span>±${fmtSEM}</span>`,
+            `<span style="color:rgba(160,190,230,0.5)">%CV</span><span style="color:${cvColor}">${g.cv.toFixed(1)}%</span>`,
+            `<span style="color:rgba(160,190,230,0.5)">n</span><span>${nLabel}</span>`,
+            `</div>`,
+          ].join("");
+
+          let tx = e.clientX - containerRect.left + 14;
+          let ty = e.clientY - containerRect.top - 80;
+          const tw = tooltip.offsetWidth || 160;
+          if (tx + tw > containerRect.width - 8) tx = e.clientX - containerRect.left - tw - 10;
+          if (ty < 4) ty = 4;
+          tooltip.style.left = tx + "px";
+          tooltip.style.top = ty + "px";
+          tooltip.style.display = "block";
+        } else {
+          const fmtX = nearestInfo.x < 0.01 || nearestInfo.x >= 10000
+            ? nearestInfo.x.toExponential(3) : nearestInfo.x.toPrecision(4);
+          const fmtY = Math.abs(nearestInfo.y) < 0.01 || Math.abs(nearestInfo.y) >= 100000
+            ? nearestInfo.y.toExponential(3) : nearestInfo.y.toFixed(1);
+
+          let label = nearestInfo.type === "curve" ? "Fit" : "Data";
+          tooltip.innerHTML = `<span style="color:${nearestInfo.type === "curve" ? (activeModel === "4PL" ? "#3b9eff" : "#a855f7") : "#00e6b4"}">${label}</span>&nbsp; x: ${fmtX}&nbsp; y: ${fmtY}`;
+          
+          let tx = e.clientX - containerRect.left + 14;
+          let ty = e.clientY - containerRect.top - 28;
+          const tw = tooltip.offsetWidth || 160;
+          if (tx + tw > containerRect.width - 8) tx = e.clientX - containerRect.left - tw - 10;
+          if (ty < 4) ty = 4;
+          tooltip.style.left = tx + "px";
+          tooltip.style.top = ty + "px";
+          tooltip.style.display = "block";
+        }
       } else {
         tooltip.style.display = "none";
       }
@@ -1052,11 +1106,11 @@ export default function BioassayCurveFitter() {
       canvas.removeEventListener("mousemove", handleMouseMove);
       canvas.removeEventListener("mouseleave", handleMouseLeave);
     };
-  }, [parsedData, fitResult, activeModel]);
+  }, [parsedData, fitResult, activeModel, pointView]);
 
   const paramLabels = activeModel === "4PL"
     ? ["A (min)", "B (slope)", "C (EC50)", "D (max)"]
-    : ["A (min)", "B (slope)", "C (EC50)", "D (max)", "E (asymmetry)"];
+    : ["Bottom", "Hill", "EC50", "Top", "S (asymmetry)"];
 
   const hasReplicates = useMemo(() => {
     if (!parsedData) return false;
@@ -1169,14 +1223,17 @@ export default function BioassayCurveFitter() {
       if (ratio <= 0) return null;
       return C * Math.pow(ratio, 1 / B);
     }
-    // 5PL: numerical inverse
-    const E = fitResult.params[4];
+    // 5PL: numerical inverse via bisection in log-space
     const modelFn = model5PL;
     let lo = 1e-15, hi = 1e15;
+    // Determine curve direction: evaluate at low and high x
+    const yLo = modelFn(lo, fitResult.params);
+    const yHi = modelFn(hi, fitResult.params);
+    const increasing = yHi > yLo;
     for (let i = 0; i < 100; i++) {
       const mid = Math.sqrt(lo * hi);
       const yMid = modelFn(mid, fitResult.params);
-      if ((B > 0 && yMid > targetY) || (B < 0 && yMid < targetY)) hi = mid;
+      if ((increasing && yMid > targetY) || (!increasing && yMid < targetY)) hi = mid;
       else lo = mid;
     }
     return Math.sqrt(lo * hi);
@@ -1235,7 +1292,18 @@ export default function BioassayCurveFitter() {
             </div>
             <textarea
               value={rawData}
-              onChange={(e) => setRawData(e.target.value)}
+              onChange={(e) => {
+                setRawData(e.target.value);
+                setParsedData(null);
+                setFitResult(null);
+                setComparison(null);
+                setError(null);
+                setGrubbsResults(null);
+                setShowOutliers(false);
+                setSelectedGrubbsGroup(null);
+                setExcludedIndices(new Set());
+                setBgStats(null);
+              }}
               placeholder="Concentration,Response&#10;0.01,0.5&#10;0.1,1.2&#10;..."
               style={{
                 width: "100%",
@@ -1380,7 +1448,7 @@ export default function BioassayCurveFitter() {
                 ? "Fits both models; selects best via AICc with parsimony preference"
                 : modelType === "4PL"
                   ? "y = D + (A−D) / (1 + (x/C)^B)"
-                  : "y = D + (A−D) / (1 + (x/C)^B)^E"}
+                  : "y = Bot + (Top−Bot) / (1 + (EC50/x)^Hill)^S"}
             </div>
           </div>
 
@@ -1429,7 +1497,7 @@ export default function BioassayCurveFitter() {
                     padding: "4px 0",
                     borderTop: "1px solid rgba(60,100,160,0.06)",
                   }}>
-                    <span style={{ color: "rgba(160,190,230,0.5)" }}>E param</span>
+                    <span style={{ color: "rgba(160,190,230,0.5)" }}>S param</span>
                     <span style={{ textAlign: "center", color: "rgba(140,170,210,0.3)" }}>—</span>
                     <span style={{ textAlign: "center", color: Math.abs(comparison.fit5PL.params[4] - 1) < 0.05 ? "#ffb432" : "#c8daf0" }}>
                       {comparison.fit5PL.params[4].toFixed(4)}
