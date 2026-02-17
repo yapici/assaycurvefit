@@ -440,6 +440,9 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
   const toCanvasX = (lx) => pad.left + ((lx - xMin) / (xMax - xMin)) * plotW;
   const toCanvasY = (y) => pad.top + ((yMax - y) / (yMax - yMin)) * plotH;
 
+  // Store coordinate metadata on canvas for tooltip hit-testing
+  canvas._chartMeta = { pad, plotW, plotH, xMin, xMax, yMin, yMax, W, H, toCanvasX, toCanvasY };
+
   // Background
   ctx.fillStyle = "#0a0f1a";
   ctx.fillRect(0, 0, W, H);
@@ -725,6 +728,8 @@ export default function BioassayCurveFitter() {
 
   const mainCanvasRef = useRef(null);
   const residCanvasRef = useRef(null);
+  const tooltipRef = useRef(null);
+  const chartContainerRef = useRef(null);
 
   const parseData = useCallback((text) => {
     const lines = text.trim().split("\n").filter(l => l.trim());
@@ -958,6 +963,96 @@ export default function BioassayCurveFitter() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [parsedData, fitResult, activeModel, showResiduals, pointView, errorBarType, chartOutlierIndices, excludedIndices]);
+
+  // Tooltip handler for main chart
+  useEffect(() => {
+    const canvas = mainCanvasRef.current;
+    const tooltip = tooltipRef.current;
+    if (!canvas || !tooltip) return;
+
+    const handleMouseMove = (e) => {
+      const meta = canvas._chartMeta;
+      if (!meta || !parsedData) { tooltip.style.display = "none"; return; }
+
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const { pad, plotW, plotH, xMin, xMax, yMin, yMax } = meta;
+
+      // Check if mouse is within plot area
+      if (mx < pad.left || mx > pad.left + plotW || my < pad.top || my > pad.top + plotH) {
+        tooltip.style.display = "none";
+        return;
+      }
+
+      // Convert mouse position to data coordinates
+      const logXMouse = xMin + (mx - pad.left) / plotW * (xMax - xMin);
+      const yMouse = yMax - (my - pad.top) / plotH * (yMax - yMin);
+
+      // Check proximity to data points first (within 12px)
+      let nearestDist = Infinity;
+      let nearestInfo = null;
+      const hitRadius = 12;
+
+      parsedData.xData.forEach((x, i) => {
+        if (x <= 0) return;
+        const lx = Math.log10(x);
+        const cx = meta.toCanvasX(lx);
+        const cy = meta.toCanvasY(parsedData.yData[i]);
+        const dist = Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2);
+        if (dist < hitRadius && dist < nearestDist) {
+          nearestDist = dist;
+          nearestInfo = { type: "point", x, y: parsedData.yData[i], index: i };
+        }
+      });
+
+      // If no data point nearby, show curve value
+      if (!nearestInfo && fitResult) {
+        const modelFn = activeModel === "4PL" ? model4PL : model5PL;
+        const xVal = Math.pow(10, logXMouse);
+        const yFit = modelFn(xVal, fitResult.params);
+        const cyFit = meta.toCanvasY(yFit);
+        if (Math.abs(my - cyFit) < 20) {
+          nearestInfo = { type: "curve", x: xVal, y: yFit };
+        }
+      }
+
+      if (nearestInfo) {
+        const fmtX = nearestInfo.x < 0.01 || nearestInfo.x >= 10000
+          ? nearestInfo.x.toExponential(3) : nearestInfo.x.toPrecision(4);
+        const fmtY = Math.abs(nearestInfo.y) < 0.01 || Math.abs(nearestInfo.y) >= 100000
+          ? nearestInfo.y.toExponential(3) : nearestInfo.y.toFixed(1);
+
+        let label = nearestInfo.type === "curve" ? "Fit" : "Data";
+        tooltip.innerHTML = `<span style="color:${nearestInfo.type === "curve" ? (activeModel === "4PL" ? "#3b9eff" : "#a855f7") : "#00e6b4"}">${label}</span>&nbsp; x: ${fmtX}&nbsp; y: ${fmtY}`;
+        
+        // Position tooltip near cursor but keep within bounds
+        const containerRect = chartContainerRef.current ? chartContainerRef.current.getBoundingClientRect() : rect;
+        let tx = e.clientX - containerRect.left + 14;
+        let ty = e.clientY - containerRect.top - 28;
+        // Clamp to container
+        const tw = tooltip.offsetWidth || 160;
+        if (tx + tw > containerRect.width - 8) tx = e.clientX - containerRect.left - tw - 10;
+        if (ty < 4) ty = 4;
+        tooltip.style.left = tx + "px";
+        tooltip.style.top = ty + "px";
+        tooltip.style.display = "block";
+      } else {
+        tooltip.style.display = "none";
+      }
+    };
+
+    const handleMouseLeave = () => {
+      tooltip.style.display = "none";
+    };
+
+    canvas.addEventListener("mousemove", handleMouseMove);
+    canvas.addEventListener("mouseleave", handleMouseLeave);
+    return () => {
+      canvas.removeEventListener("mousemove", handleMouseMove);
+      canvas.removeEventListener("mouseleave", handleMouseLeave);
+    };
+  }, [parsedData, fitResult, activeModel]);
 
   const paramLabels = activeModel === "4PL"
     ? ["A (min)", "B (slope)", "C (EC50)", "D (max)"]
@@ -1654,14 +1749,37 @@ export default function BioassayCurveFitter() {
                 )}
               </div>
             )}
-            <canvas
-              ref={mainCanvasRef}
-              style={{
-                width: "100%",
-                height: showResiduals ? 340 : 480,
-                borderRadius: 6,
-              }}
-            />
+            <div ref={chartContainerRef} style={{ position: "relative" }}>
+              <canvas
+                ref={mainCanvasRef}
+                style={{
+                  width: "100%",
+                  height: showResiduals ? 340 : 480,
+                  borderRadius: 6,
+                  cursor: "crosshair",
+                }}
+              />
+              <div
+                ref={tooltipRef}
+                style={{
+                  display: "none",
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  padding: "4px 8px",
+                  background: "rgba(10,16,30,0.92)",
+                  border: "1px solid rgba(80,120,180,0.25)",
+                  borderRadius: 4,
+                  fontSize: 10,
+                  fontFamily: "'JetBrains Mono', monospace",
+                  color: "#c8daf0",
+                  pointerEvents: "none",
+                  whiteSpace: "nowrap",
+                  zIndex: 10,
+                  backdropFilter: "blur(4px)",
+                }}
+              />
+            </div>
           </div>
 
           {showResiduals && fitResult && (
