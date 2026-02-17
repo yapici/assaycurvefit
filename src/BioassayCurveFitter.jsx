@@ -719,6 +719,9 @@ export default function BioassayCurveFitter() {
   const [showOutliers, setShowOutliers] = useState(false);
   const [excludedIndices, setExcludedIndices] = useState(new Set()); // manually excluded data point indices
   const [selectedGrubbsGroup, setSelectedGrubbsGroup] = useState(null); // concentration key for expanded view
+  const [bgRawData, setBgRawData] = useState("");
+  const [bgEnabled, setBgEnabled] = useState(false);
+  const [bgStats, setBgStats] = useState(null); // { mean, sd, n, values }
 
   const mainCanvasRef = useRef(null);
   const residCanvasRef = useRef(null);
@@ -813,14 +816,58 @@ export default function BioassayCurveFitter() {
     return { xData, yData };
   }, []);
 
+  // Parse background values: accepts a flat list of numbers (any delimiter)
+  const parseBgValues = useCallback((text) => {
+    if (!text.trim()) return null;
+    const values = [];
+    // Handle same formats as main parser: tab, comma, space, newline delimited
+    // Also handle comma-formatted thousands separators
+    const tokens = text.replace(/\n/g, "\t").split(/[\t]+/);
+    for (const token of tokens) {
+      // Each token might contain comma-separated values or comma-formatted numbers
+      const parts = token.split(",").map(s => s.trim()).filter(s => s);
+      // Check if it looks like thousands-separated: "47,189.7" → single number
+      // vs comma-delimited: "100,200,300" → multiple numbers
+      const rejoined = parts.join(",");
+      if (parts.length >= 2 && rejoined.includes(".")) {
+        // Could be thousands-formatted; try parsing as single number
+        const asOne = Number(rejoined.replace(/,/g, ""));
+        if (!isNaN(asOne)) { values.push(asOne); continue; }
+      }
+      // Otherwise treat each comma-part as separate
+      for (const p of parts) {
+        const v = Number(p.replace(/,/g, ""));
+        if (!isNaN(v) && p.trim()) values.push(v);
+      }
+    }
+    if (values.length === 0) return null;
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    const sd = values.length > 1
+      ? Math.sqrt(values.reduce((s, v) => s + (v - mean) ** 2, 0) / (values.length - 1))
+      : 0;
+    return { mean, sd, n: values.length, values };
+  }, []);
+
   const runFit = useCallback(() => {
     try {
       setError(null);
       setComparison(null);
-      const { xData, yData } = parseData(rawData);
+      const { xData, yData: yRaw } = parseData(rawData);
       if (xData.length < 4) { setError("Need at least 4 data points"); return; }
 
-      setParsedData({ xData, yData });
+      // Background subtraction
+      let bgSub = null;
+      let yData = yRaw;
+      if (bgEnabled && bgRawData.trim()) {
+        bgSub = parseBgValues(bgRawData);
+        if (!bgSub) { setError("Could not parse background values"); return; }
+        setBgStats(bgSub);
+        yData = yRaw.map(y => y - bgSub.mean);
+      } else {
+        setBgStats(null);
+      }
+
+      setParsedData({ xData, yData, yRaw, bgSubtracted: bgSub ? bgSub.mean : 0 });
 
       if (modelType === "Auto") {
         // Fit both models and compare
@@ -874,7 +921,7 @@ export default function BioassayCurveFitter() {
     } catch (e) {
       setError("Error: " + e.message);
     }
-  }, [rawData, modelType, parseData]);
+  }, [rawData, modelType, parseData, bgEnabled, bgRawData, parseBgValues]);
 
   // Merged set of outlier + excluded indices for chart display
   const chartOutlierIndices = useMemo(() => {
@@ -997,10 +1044,20 @@ export default function BioassayCurveFitter() {
   const exportCSV = useCallback(() => {
     if (!parsedData || !fitResult) return;
     const modelFn = activeModel === "4PL" ? model4PL : model5PL;
-    let csv = "Concentration,Observed,Fitted,Residual\n";
+    const hasBg = parsedData.bgSubtracted > 0;
+    let csv = "";
+    if (hasBg) csv += `# Background subtracted: ${parsedData.bgSubtracted.toFixed(2)}\n`;
+    csv += hasBg
+      ? "Concentration,Raw,BgSubtracted,Fitted,Residual\n"
+      : "Concentration,Observed,Fitted,Residual\n";
     parsedData.xData.forEach((x, i) => {
       const fitted = modelFn(x, fitResult.params);
-      csv += `${x},${parsedData.yData[i]},${fitted.toFixed(6)},${(parsedData.yData[i] - fitted).toFixed(6)}\n`;
+      const resid = parsedData.yData[i] - fitted;
+      if (hasBg && parsedData.yRaw) {
+        csv += `${x},${parsedData.yRaw[i]},${parsedData.yData[i].toFixed(6)},${fitted.toFixed(6)},${resid.toFixed(6)}\n`;
+      } else {
+        csv += `${x},${parsedData.yData[i]},${fitted.toFixed(6)},${resid.toFixed(6)}\n`;
+      }
     });
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -1104,7 +1161,85 @@ export default function BioassayCurveFitter() {
             {parsedData && (
               <p style={{ fontSize: 9, color: "#00e6b4", marginTop: 4 }}>
                 Parsed: {parsedData.xData.length} data points across {new Set(parsedData.xData).size} concentrations
+                {parsedData.bgSubtracted ? ` (bg: −${parsedData.bgSubtracted.toFixed(1)})` : ""}
               </p>
+            )}
+          </div>
+
+          {/* Background Subtraction */}
+          <div style={{
+            background: "rgba(12,20,40,0.8)",
+            border: `1px solid ${bgEnabled ? "rgba(168,85,247,0.2)" : "rgba(60,100,160,0.15)"}`,
+            borderRadius: 10,
+            padding: bgEnabled ? 16 : 0,
+            overflow: "hidden",
+            transition: "all 0.2s",
+          }}>
+            <button
+              onClick={() => setBgEnabled(!bgEnabled)}
+              style={{
+                width: "100%",
+                padding: bgEnabled ? "0 0 10px 0" : "12px 16px",
+                background: "transparent",
+                border: "none",
+                color: bgEnabled ? "rgba(168,85,247,0.9)" : "rgba(160,190,230,0.5)",
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "'JetBrains Mono', monospace",
+                textTransform: "uppercase",
+                letterSpacing: 1,
+                textAlign: "left",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <span>Background Subtraction</span>
+              <span style={{ fontSize: 10, opacity: 0.6 }}>{bgEnabled ? "▾" : "▸"}</span>
+            </button>
+            {bgEnabled && (
+              <>
+                <textarea
+                  value={bgRawData}
+                  onChange={(e) => setBgRawData(e.target.value)}
+                  placeholder={"Paste background response values\ne.g. 2150.3  2089.1  2201.5\nor one per line"}
+                  style={{
+                    width: "100%",
+                    height: 60,
+                    background: "rgba(6,10,20,0.8)",
+                    border: "1px solid rgba(168,85,247,0.15)",
+                    borderRadius: 6,
+                    color: "#c8daf0",
+                    fontSize: 11,
+                    padding: 10,
+                    resize: "vertical",
+                    outline: "none",
+                    fontFamily: "'JetBrains Mono', monospace",
+                  }}
+                />
+                <p style={{ fontSize: 9, color: "rgba(140,170,210,0.4)", marginTop: 6 }}>
+                  Response values only (no concentrations). Mean is subtracted from all data before fitting.
+                </p>
+                {bgStats && (
+                  <div style={{
+                    marginTop: 8,
+                    padding: "6px 10px",
+                    background: "rgba(168,85,247,0.06)",
+                    border: "1px solid rgba(168,85,247,0.12)",
+                    borderRadius: 6,
+                    fontSize: 10,
+                    color: "rgba(190,170,230,0.7)",
+                    display: "flex",
+                    gap: 12,
+                  }}>
+                    <span>n={bgStats.n}</span>
+                    <span>Mean: <span style={{ color: "#a855f7", fontWeight: 600 }}>{bgStats.mean.toFixed(1)}</span></span>
+                    {bgStats.n > 1 && <span>SD: {bgStats.sd.toFixed(1)}</span>}
+                    {bgStats.n > 1 && <span>%CV: {(bgStats.sd / bgStats.mean * 100).toFixed(1)}%</span>}
+                  </div>
+                )}
+              </>
             )}
           </div>
 
