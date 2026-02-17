@@ -394,8 +394,9 @@ function runGrubbsAllGroups(xData, yData, alpha = 0.05) {
 }
 
 // ── Chart drawing ─────────────────────────────────────────────────
-function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
+function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, theme = {}) {
   const { pointView = "individual", errorBarType = "sd", outlierIndices = null, excludedIndices: exclSet = null } = options;
+  const t = theme;
   const grouped = groupByConcentration(xData, yData);
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
@@ -442,14 +443,14 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
   const toCanvasY = (y) => pad.top + ((yMax - y) / (yMax - yMin)) * plotH;
 
   // Store coordinate metadata on canvas for tooltip hit-testing
-  canvas._chartMeta = { pad, plotW, plotH, xMin, xMax, yMin, yMax, W, H, toCanvasX, toCanvasY, errorBarGroups: [] };
+  canvas._chartMeta = { pad, plotW, plotH, xMin, xMax, yMin, yMax, W, H, toCanvasX, toCanvasY, errorBarGroups: [], theme: t };
 
   // Background
-  ctx.fillStyle = "#0a0f1a";
+  ctx.fillStyle = t.canvas || "#0a0f1a";
   ctx.fillRect(0, 0, W, H);
 
   // Grid
-  ctx.strokeStyle = "rgba(100,140,180,0.08)";
+  ctx.strokeStyle = t.grid || "rgba(100,140,180,0.08)";
   ctx.lineWidth = 1;
   for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
     const cx = toCanvasX(lx);
@@ -463,7 +464,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
   }
 
   // Axes
-  ctx.strokeStyle = "rgba(140,170,210,0.3)";
+  ctx.strokeStyle = t.axis || "rgba(140,170,210,0.3)";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, pad.top + plotH);
@@ -471,7 +472,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
   ctx.stroke();
 
   // Axis labels
-  ctx.fillStyle = "rgba(160,190,230,0.6)";
+  ctx.fillStyle = t.axisLabel || "rgba(160,190,230,0.6)";
   ctx.font = "11px 'JetBrains Mono', monospace";
   ctx.textAlign = "center";
   for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
@@ -484,7 +485,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
   }
 
   // Axis titles
-  ctx.fillStyle = "rgba(180,210,240,0.7)";
+  ctx.fillStyle = t.label || "rgba(180,210,240,0.7)";
   ctx.font = "12px 'JetBrains Mono', monospace";
   ctx.textAlign = "center";
   ctx.fillText("Concentration (log scale)", pad.left + plotW / 2, H - 8);
@@ -497,9 +498,9 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
   // Fitted curve
   if (fitResult) {
     const modelFn = modelType === "4PL" ? model4PL : model5PL;
-    ctx.strokeStyle = modelType === "4PL" ? "#3b9eff" : "#a855f7";
+    ctx.strokeStyle = modelType === "4PL" ? (t.blue || "#3b9eff") : (t.purple || "#a855f7");
     ctx.lineWidth = 2.5;
-    ctx.shadowColor = modelType === "4PL" ? "rgba(59,158,255,0.4)" : "rgba(168,85,247,0.4)";
+    ctx.shadowColor = modelType === "4PL" ? (t.blueBg || "rgba(59,158,255,0.4)") : (t.purpleBg || "rgba(168,85,247,0.4)");
     ctx.shadowBlur = 8;
     ctx.beginPath();
     for (let i = 0; i <= 200; i++) {
@@ -520,16 +521,16 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
         const midY = modelFn(ec50, fitResult.params);
         const cx = toCanvasX(lec50), cy = toCanvasY(midY);
         ctx.setLineDash([4, 4]);
-        ctx.strokeStyle = "rgba(255,180,50,0.5)";
+        ctx.strokeStyle = t.orangeBorder || "rgba(255,180,50,0.5)";
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(cx, pad.top); ctx.lineTo(cx, pad.top + plotH); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(pad.left, cy); ctx.lineTo(pad.left + plotW, cy); ctx.stroke();
         ctx.setLineDash([]);
         
         // EC50 marker
-        ctx.fillStyle = "rgba(255,180,50,0.9)";
+        ctx.fillStyle = t.orange || "rgba(255,180,50,0.9)";
         ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = "rgba(255,180,50,0.7)";
+        ctx.fillStyle = t.orange || "rgba(255,180,50,0.7)";
         ctx.font = "10px 'JetBrains Mono', monospace";
         ctx.textAlign = "left";
         ctx.fillText(`EC50: ${ec50.toExponential(3)}`, cx + 10, cy - 8);
@@ -569,7 +570,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
 
       // Error bar line
       if (n > 1) {
-        ctx.strokeStyle = "rgba(0,230,180,0.55)";
+        ctx.strokeStyle = (t.tealGlow || "rgba(0,230,180,") + "0.55)";
         ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.moveTo(cx, cyHi); ctx.lineTo(cx, cyLo); ctx.stroke();
         // Caps
@@ -580,14 +581,14 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
 
       // Mean point glow
       const grad = ctx.createRadialGradient(cx, cyMean, 0, cx, cyMean, 14);
-      grad.addColorStop(0, "rgba(0,230,180,0.35)");
-      grad.addColorStop(1, "rgba(0,230,180,0)");
+      grad.addColorStop(0, (t.tealGlow || "rgba(0,230,180,") + "0.35)");
+      grad.addColorStop(1, (t.tealGlow || "rgba(0,230,180,") + "0)");
       ctx.fillStyle = grad;
       ctx.beginPath(); ctx.arc(cx, cyMean, 14, 0, Math.PI * 2); ctx.fill();
 
       // Mean point
-      ctx.fillStyle = "#00e6b4";
-      ctx.strokeStyle = "rgba(0,230,180,0.6)";
+      ctx.fillStyle = t.teal || "#00e6b4";
+      ctx.strokeStyle = (t.tealGlow || "rgba(0,230,180,") + "0.6)";
       ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(cx, cyMean, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     });
@@ -603,40 +604,40 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
       if (isExcluded) {
         // Dimmed with strikethrough
         ctx.globalAlpha = 0.3;
-        ctx.fillStyle = "#ff506a";
-        ctx.strokeStyle = "rgba(255,80,106,0.4)";
+        ctx.fillStyle = t.red || "#ff506a";
+        ctx.strokeStyle = (t.redGlow || "rgba(255,80,106,") + "0.4)";
         ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
         // Strikethrough line
-        ctx.strokeStyle = "rgba(255,80,106,0.5)";
+        ctx.strokeStyle = (t.redGlow || "rgba(255,80,106,") + "0.5)";
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(cx - 7, cy); ctx.lineTo(cx + 7, cy); ctx.stroke();
         ctx.globalAlpha = 1;
       } else if (isOutlier) {
         // Outlier flagged (red glow + X)
         const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 12);
-        grad.addColorStop(0, "rgba(255,80,100,0.3)");
-        grad.addColorStop(1, "rgba(255,80,100,0)");
+        grad.addColorStop(0, (t.redGlow || "rgba(255,80,100,") + "0.3)");
+        grad.addColorStop(1, (t.redGlow || "rgba(255,80,100,") + "0)");
         ctx.fillStyle = grad;
         ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = "#ff506a";
-        ctx.strokeStyle = "rgba(255,80,106,0.6)";
+        ctx.fillStyle = t.red || "#ff506a";
+        ctx.strokeStyle = (t.redGlow || "rgba(255,80,106,") + "0.6)";
         ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
         const s = 6;
-        ctx.strokeStyle = "rgba(255,80,106,0.7)";
+        ctx.strokeStyle = (t.redGlow || "rgba(255,80,106,") + "0.7)";
         ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.moveTo(cx - s, cy - s); ctx.lineTo(cx + s, cy + s); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(cx + s, cy - s); ctx.lineTo(cx - s, cy + s); ctx.stroke();
       } else {
         // Normal point
         const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 12);
-        grad.addColorStop(0, "rgba(0,230,180,0.3)");
-        grad.addColorStop(1, "rgba(0,230,180,0)");
+        grad.addColorStop(0, (t.tealGlow || "rgba(0,230,180,") + "0.3)");
+        grad.addColorStop(1, (t.tealGlow || "rgba(0,230,180,") + "0)");
         ctx.fillStyle = grad;
         ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = "#00e6b4";
-        ctx.strokeStyle = "rgba(0,230,180,0.5)";
+        ctx.fillStyle = t.teal || "#00e6b4";
+        ctx.strokeStyle = (t.tealGlow || "rgba(0,230,180,") + "0.5)";
         ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       }
@@ -648,7 +649,8 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}) {
 }
 
 // ── Residuals chart ───────────────────────────────────────────────
-function drawResiduals(canvas, xData, yData, fitResult, modelType) {
+function drawResiduals(canvas, xData, yData, fitResult, modelType, theme = {}) {
+  const t = theme;
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -671,11 +673,11 @@ function drawResiduals(canvas, xData, yData, fitResult, modelType) {
   const toCanvasX = (lx) => pad.left + ((lx - xMin) / (xMax - xMin)) * plotW;
   const toCanvasY = (r) => pad.top + ((rMax - r) / (2 * rMax)) * plotH;
 
-  ctx.fillStyle = "#0a0f1a";
+  ctx.fillStyle = t.canvas || "#0a0f1a";
   ctx.fillRect(0, 0, W, H);
 
   // Zero line
-  ctx.strokeStyle = "rgba(255,180,50,0.3)";
+  ctx.strokeStyle = t.orangeBorder || "rgba(255,180,50,0.3)";
   ctx.setLineDash([4, 4]);
   ctx.lineWidth = 1;
   const zeroY = toCanvasY(0);
@@ -687,7 +689,7 @@ function drawResiduals(canvas, xData, yData, fitResult, modelType) {
     if (x <= 0) return;
     const lx = Math.log10(x);
     const cx = toCanvasX(lx), cy = toCanvasY(res[i]);
-    const color = res[i] >= 0 ? "#00e6b4" : "#ff6b8a";
+    const color = res[i] >= 0 ? (t.teal || "#00e6b4") : (t.red || "#ff6b8a");
     ctx.fillStyle = color;
     ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
     
@@ -697,7 +699,7 @@ function drawResiduals(canvas, xData, yData, fitResult, modelType) {
     ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx, zeroY); ctx.stroke();
   });
 
-  ctx.fillStyle = "rgba(160,190,230,0.6)";
+  ctx.fillStyle = t.axisLabel || "rgba(160,190,230,0.6)";
   ctx.font = "11px 'JetBrains Mono', monospace";
   ctx.textAlign = "center";
   ctx.fillText("Residuals", pad.left + plotW / 2, H - 6);
@@ -739,6 +741,96 @@ export default function BioassayCurveFitter() {
   const [bgRawData, setBgRawData] = useState("");
   const [bgEnabled, setBgEnabled] = useState(false);
   const [bgStats, setBgStats] = useState(null); // { mean, sd, n, values }
+  const [theme, setTheme] = useState("dark"); // "dark" or "light"
+
+  // Theme color palettes
+  const t = useMemo(() => {
+    const dark = {
+      bg: "linear-gradient(160deg, #060a12 0%, #0c1324 40%, #0a1020 100%)",
+      text: "#c8daf0",
+      textMuted: "rgba(160,190,230,0.5)",
+      textDim: "rgba(140,170,210,0.4)",
+      textFaint: "rgba(140,170,210,0.3)",
+      label: "rgba(160,190,230,0.7)",
+      labelDim: "rgba(160,190,230,0.6)",
+      panel: "rgba(12,20,40,0.8)",
+      panelBorder: "rgba(60,100,160,0.15)",
+      panelBorderLight: "rgba(60,100,160,0.08)",
+      input: "rgba(6,10,20,0.8)",
+      inputBorder: "rgba(60,100,160,0.2)",
+      canvas: "#0a0f1a",
+      grid: "rgba(100,140,180,0.08)",
+      axis: "rgba(140,170,210,0.3)",
+      axisLabel: "rgba(160,190,230,0.6)",
+      teal: "#00e6b4",
+      tealBg: "rgba(0,230,180,0.12)",
+      tealBorder: "rgba(0,230,180,0.3)",
+      tealGlow: "rgba(0,230,180,",
+      blue: "#3b9eff",
+      blueBg: "rgba(59,158,255,0.15)",
+      blueBorder: "rgba(59,158,255,0.3)",
+      purple: "#a855f7",
+      purpleBg: "rgba(168,85,247,0.15)",
+      purpleBorder: "rgba(168,85,247,0.3)",
+      orange: "#ffb432",
+      orangeBg: "rgba(255,180,50,0.15)",
+      orangeBorder: "rgba(255,180,50,0.3)",
+      red: "#ff6b8a",
+      redBg: "rgba(255,80,106,0.12)",
+      redBorder: "rgba(255,80,106,0.3)",
+      redGlow: "rgba(255,80,100,",
+      tooltip: "rgba(10,16,30,0.92)",
+      tooltipBorder: "rgba(80,120,180,0.25)",
+      scrollTrack: "rgba(0,0,0,0.2)",
+      scrollThumb: "rgba(100,140,200,0.3)",
+      btnInactive: "rgba(6,10,20,0.5)",
+      btnInactiveBorder: "rgba(60,100,160,0.1)",
+      btnInactiveText: "rgba(160,190,230,0.4)",
+    };
+    const light = {
+      bg: "linear-gradient(160deg, #f0f4f8 0%, #e8edf4 40%, #f2f5fa 100%)",
+      text: "#1a2a40",
+      textMuted: "rgba(60,80,110,0.6)",
+      textDim: "rgba(60,80,110,0.5)",
+      textFaint: "rgba(60,80,110,0.35)",
+      label: "rgba(40,60,90,0.75)",
+      labelDim: "rgba(40,60,90,0.6)",
+      panel: "rgba(255,255,255,0.85)",
+      panelBorder: "rgba(60,100,160,0.15)",
+      panelBorderLight: "rgba(60,100,160,0.08)",
+      input: "rgba(245,248,252,0.9)",
+      inputBorder: "rgba(60,100,160,0.2)",
+      canvas: "#f8fafd",
+      grid: "rgba(60,100,160,0.08)",
+      axis: "rgba(60,80,120,0.25)",
+      axisLabel: "rgba(40,60,100,0.55)",
+      teal: "#009e7e",
+      tealBg: "rgba(0,158,126,0.1)",
+      tealBorder: "rgba(0,158,126,0.3)",
+      tealGlow: "rgba(0,158,126,",
+      blue: "#2563eb",
+      blueBg: "rgba(37,99,235,0.1)",
+      blueBorder: "rgba(37,99,235,0.3)",
+      purple: "#7c3aed",
+      purpleBg: "rgba(124,58,237,0.1)",
+      purpleBorder: "rgba(124,58,237,0.3)",
+      orange: "#d97706",
+      orangeBg: "rgba(217,119,6,0.1)",
+      orangeBorder: "rgba(217,119,6,0.3)",
+      red: "#e11d48",
+      redBg: "rgba(225,29,72,0.08)",
+      redBorder: "rgba(225,29,72,0.25)",
+      redGlow: "rgba(225,29,72,",
+      tooltip: "rgba(255,255,255,0.95)",
+      tooltipBorder: "rgba(60,100,160,0.2)",
+      scrollTrack: "rgba(0,0,0,0.05)",
+      scrollThumb: "rgba(60,100,160,0.2)",
+      btnInactive: "rgba(240,243,248,0.8)",
+      btnInactiveBorder: "rgba(60,100,160,0.12)",
+      btnInactiveText: "rgba(60,80,110,0.45)",
+    };
+    return theme === "dark" ? dark : light;
+  }, [theme]);
 
   const mainCanvasRef = useRef(null);
   const residCanvasRef = useRef(null);
@@ -954,29 +1046,29 @@ export default function BioassayCurveFitter() {
   // Draw charts whenever data changes
   useEffect(() => {
     if (mainCanvasRef.current && parsedData) {
-      drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices });
+      drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices }, t);
     }
-  }, [parsedData, fitResult, activeModel, pointView, errorBarType, chartOutlierIndices, excludedIndices]);
+  }, [parsedData, fitResult, activeModel, pointView, errorBarType, chartOutlierIndices, excludedIndices, t]);
 
   useEffect(() => {
     if (residCanvasRef.current && parsedData && fitResult && showResiduals) {
-      drawResiduals(residCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel);
+      drawResiduals(residCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, t);
     }
-  }, [parsedData, fitResult, activeModel, showResiduals]);
+  }, [parsedData, fitResult, activeModel, showResiduals, t]);
 
   // Resize handler
   useEffect(() => {
     const handleResize = () => {
       if (mainCanvasRef.current && parsedData) {
-        drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices });
+        drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices }, t);
       }
       if (residCanvasRef.current && parsedData && fitResult && showResiduals) {
-        drawResiduals(residCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel);
+        drawResiduals(residCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, t);
       }
     };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [parsedData, fitResult, activeModel, showResiduals, pointView, errorBarType, chartOutlierIndices, excludedIndices]);
+  }, [parsedData, fitResult, activeModel, showResiduals, pointView, errorBarType, chartOutlierIndices, excludedIndices, t]);
 
   // Tooltip handler for main chart
   useEffect(() => {
@@ -992,6 +1084,7 @@ export default function BioassayCurveFitter() {
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
       const { pad, plotW, plotH, xMin, xMax, yMin, yMax } = meta;
+      const mt = meta.theme || {};
 
       // Check if mouse is within plot area
       if (mx < pad.left || mx > pad.left + plotW || my < pad.top || my > pad.top + plotH) {
@@ -1051,17 +1144,17 @@ export default function BioassayCurveFitter() {
           const fmtMean = Math.abs(g.mean) < 0.01 || Math.abs(g.mean) >= 100000 ? g.mean.toExponential(4) : g.mean.toFixed(1);
           const fmtSD = g.sd < 0.01 ? g.sd.toExponential(2) : g.sd < 100 ? g.sd.toFixed(2) : g.sd.toFixed(0);
           const fmtSEM = g.sem < 0.01 ? g.sem.toExponential(2) : g.sem < 100 ? g.sem.toFixed(2) : g.sem.toFixed(0);
-          const cvColor = g.cv > 20 ? "#ff6b8a" : g.cv > 10 ? "#ffb432" : "#00e6b4";
+          const cvColor = g.cv > 20 ? (mt.red || "#ff6b8a") : g.cv > 10 ? (mt.orange || "#ffb432") : (mt.teal || "#00e6b4");
           const nLabel = g.n < g.nTotal ? `${g.n}/${g.nTotal}` : `${g.n}`;
 
           tooltip.innerHTML = [
-            `<div style="color:#00e6b4;font-weight:600;margin-bottom:3px">Conc: ${fmtX}</div>`,
+            `<div style="color:${mt.teal || '#00e6b4'};font-weight:600;margin-bottom:3px">Conc: ${fmtX}</div>`,
             `<div style="display:grid;grid-template-columns:auto auto;gap:1px 10px;font-size:9px">`,
-            `<span style="color:rgba(160,190,230,0.5)">Mean</span><span>${fmtMean}</span>`,
-            `<span style="color:rgba(160,190,230,0.5)">SD</span><span>±${fmtSD}</span>`,
-            `<span style="color:rgba(160,190,230,0.5)">SEM</span><span>±${fmtSEM}</span>`,
-            `<span style="color:rgba(160,190,230,0.5)">%CV</span><span style="color:${cvColor}">${g.cv.toFixed(1)}%</span>`,
-            `<span style="color:rgba(160,190,230,0.5)">n</span><span>${nLabel}</span>`,
+            `<span style="color:${mt.textMuted || 'rgba(160,190,230,0.5)'}">Mean</span><span>${fmtMean}</span>`,
+            `<span style="color:${mt.textMuted || 'rgba(160,190,230,0.5)'}">SD</span><span>±${fmtSD}</span>`,
+            `<span style="color:${mt.textMuted || 'rgba(160,190,230,0.5)'}">SEM</span><span>±${fmtSEM}</span>`,
+            `<span style="color:${mt.textMuted || 'rgba(160,190,230,0.5)'}">%CV</span><span style="color:${cvColor}">${g.cv.toFixed(1)}%</span>`,
+            `<span style="color:${mt.textMuted || 'rgba(160,190,230,0.5)'}">n</span><span>${nLabel}</span>`,
             `</div>`,
           ].join("");
 
@@ -1080,7 +1173,7 @@ export default function BioassayCurveFitter() {
             ? nearestInfo.y.toExponential(3) : nearestInfo.y.toFixed(1);
 
           let label = nearestInfo.type === "curve" ? "Fit" : "Data";
-          tooltip.innerHTML = `<span style="color:${nearestInfo.type === "curve" ? (activeModel === "4PL" ? "#3b9eff" : "#a855f7") : "#00e6b4"}">${label}</span>&nbsp; x: ${fmtX}&nbsp; y: ${fmtY}`;
+          tooltip.innerHTML = `<span style="color:${nearestInfo.type === "curve" ? (activeModel === "4PL" ? (mt.blue || "#3b9eff") : (mt.purple || "#a855f7")) : (mt.teal || "#00e6b4")}">${label}</span>&nbsp; x: ${fmtX}&nbsp; y: ${fmtY}`;
           
           let tx = e.clientX - containerRect.left + 14;
           let ty = e.clientY - containerRect.top - 28;
@@ -1245,36 +1338,59 @@ export default function BioassayCurveFitter() {
   return (
     <div style={{
       minHeight: "100vh",
-      background: "linear-gradient(160deg, #060a12 0%, #0c1324 40%, #0a1020 100%)",
-      color: "#c8daf0",
+      background: t.bg,
+      color: t.text,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
       padding: "24px",
+      transition: "background 0.3s, color 0.3s",
     }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
         textarea { font-family: 'JetBrains Mono', monospace; }
         ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
-        ::-webkit-scrollbar-thumb { background: rgba(100,140,200,0.3); border-radius: 3px; }
+        ::-webkit-scrollbar-track { background: ${t.scrollTrack}; }
+        ::-webkit-scrollbar-thumb { background: ${t.scrollThumb}; border-radius: 3px; }
       `}</style>
 
       {/* Header */}
-      <div style={{ maxWidth: 1200, margin: "0 auto 24px" }}>
-        <h1 style={{
-          fontFamily: "'Space Grotesk', sans-serif",
-          fontSize: 28,
-          fontWeight: 700,
-          background: "linear-gradient(135deg, #3b9eff, #a855f7, #00e6b4)",
-          WebkitBackgroundClip: "text",
-          WebkitTextFillColor: "transparent",
-          letterSpacing: "-0.5px",
-        }}>
-          Bioassay Curve Fitter
-        </h1>
-        <p style={{ fontSize: 12, color: "rgba(160,190,230,0.5)", marginTop: 4 }}>
-          4-Parameter & 5-Parameter Logistic Regression | Levenberg-Marquardt Optimization
-        </p>
+      <div style={{ maxWidth: 1200, margin: "0 auto 24px", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h1 style={{
+            fontFamily: "'Space Grotesk', sans-serif",
+            fontSize: 28,
+            fontWeight: 700,
+            background: "linear-gradient(135deg, #3b9eff, #a855f7, #00e6b4)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            letterSpacing: "-0.5px",
+          }}>
+            Bioassay Curve Fitter
+          </h1>
+          <p style={{ fontSize: 12, color: t.textMuted, marginTop: 4 }}>
+            4-Parameter & 5-Parameter Logistic Regression | Levenberg-Marquardt Optimization
+          </p>
+        </div>
+        <button
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          style={{
+            padding: "6px 12px",
+            background: t.panel,
+            border: `1px solid ${t.panelBorder}`,
+            borderRadius: 6,
+            color: t.textMuted,
+            fontSize: 10,
+            cursor: "pointer",
+            fontFamily: "'JetBrains Mono', monospace",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            transition: "all 0.2s",
+          }}
+        >
+          <span style={{ fontSize: 14 }}>{theme === "dark" ? "☀️" : "🌙"}</span>
+          {theme === "dark" ? "Light" : "Dark"}
+        </button>
       </div>
 
       <div style={{ maxWidth: 1200, margin: "0 auto", display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, alignItems: "start" }}>
@@ -1282,12 +1398,12 @@ export default function BioassayCurveFitter() {
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* Data Input */}
           <div style={{
-            background: "rgba(12,20,40,0.8)",
-            border: "1px solid rgba(60,100,160,0.15)",
+            background: t.panel,
+            border: `1px solid ${t.panelBorder}`,
             borderRadius: 10,
             padding: 16,
           }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "rgba(160,190,230,0.7)", marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
               Data Input
             </div>
             <textarea
@@ -1308,21 +1424,21 @@ export default function BioassayCurveFitter() {
               style={{
                 width: "100%",
                 height: 200,
-                background: "rgba(6,10,20,0.8)",
-                border: "1px solid rgba(60,100,160,0.2)",
+                background: t.input,
+                border: `1px solid ${t.inputBorder}`,
                 borderRadius: 6,
-                color: "#c8daf0",
+                color: t.text,
                 fontSize: 11,
                 padding: 10,
                 resize: "vertical",
                 outline: "none",
               }}
             />
-            <p style={{ fontSize: 9, color: "rgba(140,170,210,0.4)", marginTop: 6 }}>
+            <p style={{ fontSize: 9, color: t.textDim, marginTop: 6 }}>
               CSV/TSV format. First column = concentration, additional columns = replicates. Comma-formatted numbers (e.g. 47,189.7) supported.
             </p>
             {parsedData && (
-              <p style={{ fontSize: 9, color: "#00e6b4", marginTop: 4 }}>
+              <p style={{ fontSize: 9, color: t.teal, marginTop: 4 }}>
                 Parsed: {parsedData.xData.length} data points across {new Set(parsedData.xData).size} concentrations
                 {parsedData.bgSubtracted ? ` (bg: −${parsedData.bgSubtracted.toFixed(1)})` : ""}
               </p>
@@ -1331,7 +1447,7 @@ export default function BioassayCurveFitter() {
 
           {/* Background Subtraction */}
           <div style={{
-            background: "rgba(12,20,40,0.8)",
+            background: t.panel,
             border: `1px solid ${bgEnabled ? "rgba(168,85,247,0.2)" : "rgba(60,100,160,0.15)"}`,
             borderRadius: 10,
             padding: bgEnabled ? 16 : 0,
@@ -1370,10 +1486,10 @@ export default function BioassayCurveFitter() {
                   style={{
                     width: "100%",
                     height: 60,
-                    background: "rgba(6,10,20,0.8)",
+                    background: t.input,
                     border: "1px solid rgba(168,85,247,0.15)",
                     borderRadius: 6,
-                    color: "#c8daf0",
+                    color: t.text,
                     fontSize: 11,
                     padding: 10,
                     resize: "vertical",
@@ -1381,7 +1497,7 @@ export default function BioassayCurveFitter() {
                     fontFamily: "'JetBrains Mono', monospace",
                   }}
                 />
-                <p style={{ fontSize: 9, color: "rgba(140,170,210,0.4)", marginTop: 6 }}>
+                <p style={{ fontSize: 9, color: t.textDim, marginTop: 6 }}>
                   Response values only (no concentrations). Mean is subtracted from all data before fitting.
                 </p>
                 {bgStats && (
@@ -1397,7 +1513,7 @@ export default function BioassayCurveFitter() {
                     gap: 12,
                   }}>
                     <span>n={bgStats.n}</span>
-                    <span>Mean: <span style={{ color: "#a855f7", fontWeight: 600 }}>{bgStats.mean.toFixed(1)}</span></span>
+                    <span>Mean: <span style={{ color: t.purple, fontWeight: 600 }}>{bgStats.mean.toFixed(1)}</span></span>
                     {bgStats.n > 1 && <span>SD: {bgStats.sd.toFixed(1)}</span>}
                     {bgStats.n > 1 && <span>%CV: {(bgStats.sd / bgStats.mean * 100).toFixed(1)}%</span>}
                   </div>
@@ -1408,17 +1524,17 @@ export default function BioassayCurveFitter() {
 
           {/* Model Selection */}
           <div style={{
-            background: "rgba(12,20,40,0.8)",
-            border: "1px solid rgba(60,100,160,0.15)",
+            background: t.panel,
+            border: `1px solid ${t.panelBorder}`,
             borderRadius: 10,
             padding: 16,
           }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "rgba(160,190,230,0.7)", marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
               Model
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               {["Auto", "4PL", "5PL"].map(m => {
-                const colors = { Auto: { active: "#00e6b4", bg: "rgba(0,230,180,0.15)", border: "rgba(0,230,180,0.4)" }, "4PL": { active: "#3b9eff", bg: "rgba(59,158,255,0.15)", border: "rgba(59,158,255,0.4)" }, "5PL": { active: "#a855f7", bg: "rgba(168,85,247,0.15)", border: "rgba(168,85,247,0.4)" } };
+                const colors = { Auto: { active: t.teal, bg: t.tealBg, border: t.tealBorder }, "4PL": { active: t.blue, bg: t.blueBg, border: t.blueBorder }, "5PL": { active: t.purple, bg: t.purpleBg, border: t.purpleBorder } };
                 const c = colors[m];
                 return (
                   <button
@@ -1427,7 +1543,7 @@ export default function BioassayCurveFitter() {
                     style={{
                       flex: 1,
                       padding: "10px 0",
-                      background: modelType === m ? c.bg : "rgba(6,10,20,0.6)",
+                      background: modelType === m ? c.bg : t.btnInactive,
                       border: `1px solid ${modelType === m ? c.border : "rgba(60,100,160,0.15)"}`,
                       borderRadius: 6,
                       color: modelType === m ? c.active : "rgba(160,190,230,0.5)",
@@ -1443,7 +1559,7 @@ export default function BioassayCurveFitter() {
                 );
               })}
             </div>
-            <div style={{ marginTop: 10, fontSize: 10, color: "rgba(140,170,210,0.4)", lineHeight: 1.6 }}>
+            <div style={{ marginTop: 10, fontSize: 10, color: t.textDim, lineHeight: 1.6 }}>
               {modelType === "Auto"
                 ? "Fits both models; selects best via AICc with parsimony preference"
                 : modelType === "4PL"
@@ -1455,21 +1571,21 @@ export default function BioassayCurveFitter() {
           {/* Model Comparison Panel (Auto mode) */}
           {comparison && comparison.fit5PL && (
             <div style={{
-              background: "rgba(12,20,40,0.8)",
-              border: "1px solid rgba(60,100,160,0.15)",
+              background: t.panel,
+              border: `1px solid ${t.panelBorder}`,
               borderRadius: 10,
               padding: 16,
             }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "rgba(160,190,230,0.7)", marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
                 Model Comparison
               </div>
               
               {/* Comparison table */}
               <div style={{ fontSize: 10 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, marginBottom: 4 }}>
-                  <span style={{ color: "rgba(140,170,210,0.4)" }}></span>
-                  <span style={{ color: "#3b9eff", fontWeight: 600, textAlign: "center" }}>4PL</span>
-                  <span style={{ color: "#a855f7", fontWeight: 600, textAlign: "center" }}>5PL</span>
+                  <span style={{ color: t.textDim }}></span>
+                  <span style={{ color: t.blue, fontWeight: 600, textAlign: "center" }}>4PL</span>
+                  <span style={{ color: t.purple, fontWeight: 600, textAlign: "center" }}>5PL</span>
                 </div>
                 {[
                   { label: "R²", v4: comparison.fit4PL.r2.toFixed(6), v5: comparison.fit5PL.r2.toFixed(6) },
@@ -1484,7 +1600,7 @@ export default function BioassayCurveFitter() {
                     padding: "4px 0",
                     borderTop: "1px solid rgba(60,100,160,0.06)",
                   }}>
-                    <span style={{ color: "rgba(160,190,230,0.5)" }}>{row.label}</span>
+                    <span style={{ color: t.textMuted }}>{row.label}</span>
                     <span style={{ textAlign: "center", color: comparison.selected === "4PL" && row.label === "AICc" ? "#00e6b4" : "#c8daf0" }}>{row.v4}</span>
                     <span style={{ textAlign: "center", color: comparison.selected === "5PL" && row.label === "AICc" ? "#00e6b4" : "#c8daf0" }}>{row.v5}</span>
                   </div>
@@ -1497,8 +1613,8 @@ export default function BioassayCurveFitter() {
                     padding: "4px 0",
                     borderTop: "1px solid rgba(60,100,160,0.06)",
                   }}>
-                    <span style={{ color: "rgba(160,190,230,0.5)" }}>S param</span>
-                    <span style={{ textAlign: "center", color: "rgba(140,170,210,0.3)" }}>—</span>
+                    <span style={{ color: t.textMuted }}>S param</span>
+                    <span style={{ textAlign: "center", color: t.textFaint }}>—</span>
                     <span style={{ textAlign: "center", color: Math.abs(comparison.fit5PL.params[4] - 1) < 0.05 ? "#ffb432" : "#c8daf0" }}>
                       {comparison.fit5PL.params[4].toFixed(4)}
                     </span>
@@ -1514,10 +1630,10 @@ export default function BioassayCurveFitter() {
                 border: `1px solid ${comparison.selected === "4PL" ? "rgba(59,158,255,0.2)" : "rgba(168,85,247,0.2)"}`,
                 borderRadius: 6,
               }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: comparison.selected === "4PL" ? "#3b9eff" : "#a855f7", marginBottom: 2 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: comparison.selected === "4PL" ? t.blue : t.purple, marginBottom: 2 }}>
                   ▸ {comparison.selected} Selected
                 </div>
-                <div style={{ fontSize: 9, color: "rgba(160,190,230,0.5)", lineHeight: 1.5 }}>
+                <div style={{ fontSize: 9, color: t.textMuted, lineHeight: 1.5 }}>
                   {comparison.reason}
                 </div>
               </div>
@@ -1534,7 +1650,7 @@ export default function BioassayCurveFitter() {
                     style={{
                       flex: 1,
                       padding: "6px 0",
-                      background: activeModel === m ? "rgba(0,230,180,0.1)" : "rgba(6,10,20,0.6)",
+                      background: activeModel === m ? "rgba(0,230,180,0.1)" : t.btnInactive,
                       border: `1px solid ${activeModel === m ? "rgba(0,230,180,0.3)" : "rgba(60,100,160,0.1)"}`,
                       borderRadius: 4,
                       color: activeModel === m ? "#00e6b4" : "rgba(160,190,230,0.4)",
@@ -1560,7 +1676,7 @@ export default function BioassayCurveFitter() {
               background: "linear-gradient(135deg, rgba(59,158,255,0.2), rgba(0,230,180,0.2))",
               border: "1px solid rgba(59,158,255,0.3)",
               borderRadius: 8,
-              color: "#3b9eff",
+              color: t.blue,
               fontSize: 14,
               fontWeight: 700,
               cursor: "pointer",
@@ -1586,7 +1702,7 @@ export default function BioassayCurveFitter() {
               background: "rgba(255,80,80,0.1)",
               border: "1px solid rgba(255,80,80,0.3)",
               borderRadius: 6,
-              color: "#ff6b8a",
+              color: t.red,
               fontSize: 11,
             }}>
               {error}
@@ -1596,14 +1712,14 @@ export default function BioassayCurveFitter() {
           {/* Results */}
           {fitResult && (
             <div style={{
-              background: "rgba(12,20,40,0.8)",
-              border: "1px solid rgba(60,100,160,0.15)",
+              background: t.panel,
+              border: `1px solid ${t.panelBorder}`,
               borderRadius: 10,
               padding: 16,
             }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "rgba(160,190,230,0.7)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 12, textTransform: "uppercase", letterSpacing: 1, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span>Fit Parameters</span>
-                <span style={{ color: activeModel === "4PL" ? "#3b9eff" : "#a855f7", fontSize: 10 }}>{activeModel}</span>
+                <span style={{ color: activeModel === "4PL" ? t.blue : t.purple, fontSize: 10 }}>{activeModel}</span>
               </div>
               {paramLabels.map((label, i) => (
                 <div key={i} style={{
@@ -1612,11 +1728,11 @@ export default function BioassayCurveFitter() {
                   padding: "6px 0",
                   borderBottom: i < paramLabels.length - 1 ? "1px solid rgba(60,100,160,0.08)" : "none",
                 }}>
-                  <span style={{ fontSize: 11, color: "rgba(160,190,230,0.6)" }}>{label}</span>
+                  <span style={{ fontSize: 11, color: t.labelDim }}>{label}</span>
                   <span style={{
                     fontSize: 12,
                     fontWeight: 600,
-                    color: i === 2 ? "#ffb432" : "#00e6b4",
+                    color: i === 2 ? t.orange : t.teal,
                   }}>
                     {Math.abs(fitResult.params[i]) < 0.01 || Math.abs(fitResult.params[i]) > 10000
                       ? fitResult.params[i].toExponential(4)
@@ -1625,42 +1741,42 @@ export default function BioassayCurveFitter() {
                 </div>
               ))}
 
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(60,100,160,0.15)" }}>
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${t.panelBorder}` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                  <span style={{ fontSize: 11, color: "rgba(160,190,230,0.6)" }}>R²</span>
+                  <span style={{ fontSize: 11, color: t.labelDim }}>R²</span>
                   <span style={{
                     fontSize: 13,
                     fontWeight: 700,
-                    color: fitResult.r2 > 0.99 ? "#00e6b4" : fitResult.r2 > 0.95 ? "#ffb432" : "#ff6b8a",
+                    color: fitResult.r2 > 0.99 ? t.teal : fitResult.r2 > 0.95 ? t.orange : t.red,
                   }}>
                     {fitResult.r2.toFixed(6)}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                  <span style={{ fontSize: 11, color: "rgba(160,190,230,0.6)" }}>RMSE</span>
-                  <span style={{ fontSize: 12, color: "#c8daf0" }}>{fitResult.rmse.toFixed(6)}</span>
+                  <span style={{ fontSize: 11, color: t.labelDim }}>RMSE</span>
+                  <span style={{ fontSize: 12, color: t.text }}>{fitResult.rmse.toFixed(6)}</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 11, color: "rgba(160,190,230,0.6)" }}>SSR</span>
-                  <span style={{ fontSize: 12, color: "#c8daf0" }}>{fitResult.ssr.toFixed(6)}</span>
+                  <span style={{ fontSize: 11, color: t.labelDim }}>SSR</span>
+                  <span style={{ fontSize: 12, color: t.text }}>{fitResult.ssr.toFixed(6)}</span>
                 </div>
                 {fitResult.aicc !== undefined && (
                   <>
                     <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-                      <span style={{ fontSize: 11, color: "rgba(160,190,230,0.6)" }}>AICc</span>
-                      <span style={{ fontSize: 12, color: "#c8daf0" }}>{fitResult.aicc.toFixed(2)}</span>
+                      <span style={{ fontSize: 11, color: t.labelDim }}>AICc</span>
+                      <span style={{ fontSize: 12, color: t.text }}>{fitResult.aicc.toFixed(2)}</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-                      <span style={{ fontSize: 11, color: "rgba(160,190,230,0.6)" }}>BIC</span>
-                      <span style={{ fontSize: 12, color: "#c8daf0" }}>{fitResult.bic.toFixed(2)}</span>
+                      <span style={{ fontSize: 11, color: t.labelDim }}>BIC</span>
+                      <span style={{ fontSize: 12, color: t.text }}>{fitResult.bic.toFixed(2)}</span>
                     </div>
                   </>
                 )}
               </div>
 
               {/* Interpolation */}
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(60,100,160,0.15)" }}>
-                <div style={{ fontSize: 10, color: "rgba(160,190,230,0.5)", marginBottom: 6 }}>
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${t.panelBorder}` }}>
+                <div style={{ fontSize: 10, color: t.textMuted, marginBottom: 6 }}>
                   INTERPOLATE: Response → Concentration
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
@@ -1672,10 +1788,10 @@ export default function BioassayCurveFitter() {
                     style={{
                       flex: 1,
                       padding: "6px 8px",
-                      background: "rgba(6,10,20,0.8)",
-                      border: "1px solid rgba(60,100,160,0.2)",
+                      background: t.input,
+                      border: `1px solid ${t.inputBorder}`,
                       borderRadius: 4,
-                      color: "#c8daf0",
+                      color: t.text,
                       fontSize: 11,
                       fontFamily: "'JetBrains Mono', monospace",
                       outline: "none",
@@ -1691,7 +1807,7 @@ export default function BioassayCurveFitter() {
                       background: "rgba(255,180,50,0.15)",
                       border: "1px solid rgba(255,180,50,0.3)",
                       borderRadius: 4,
-                      color: "#ffb432",
+                      color: t.orange,
                       fontSize: 10,
                       cursor: "pointer",
                       fontFamily: "'JetBrains Mono', monospace",
@@ -1701,7 +1817,7 @@ export default function BioassayCurveFitter() {
                   </button>
                 </div>
                 {interpResult !== null && interpResult !== undefined && (
-                  <div style={{ marginTop: 6, fontSize: 11, color: "#ffb432" }}>
+                  <div style={{ marginTop: 6, fontSize: 11, color: t.orange }}>
                     Concentration: {interpResult.toExponential(4)}
                   </div>
                 )}
@@ -1714,7 +1830,7 @@ export default function BioassayCurveFitter() {
                   style={{
                     flex: 1,
                     padding: "8px 0",
-                    background: showResiduals ? "rgba(0,230,180,0.1)" : "rgba(6,10,20,0.6)",
+                    background: showResiduals ? "rgba(0,230,180,0.1)" : t.btnInactive,
                     border: `1px solid ${showResiduals ? "rgba(0,230,180,0.3)" : "rgba(60,100,160,0.15)"}`,
                     borderRadius: 4,
                     color: showResiduals ? "#00e6b4" : "rgba(160,190,230,0.5)",
@@ -1732,10 +1848,10 @@ export default function BioassayCurveFitter() {
                   style={{
                     flex: 1,
                     padding: "8px 0",
-                    background: "rgba(6,10,20,0.6)",
-                    border: "1px solid rgba(60,100,160,0.15)",
+                    background: t.btnInactive,
+                    border: `1px solid ${t.panelBorder}`,
                     borderRadius: 4,
-                    color: "rgba(160,190,230,0.5)",
+                    color: t.textMuted,
                     fontSize: 9,
                     cursor: "pointer",
                     fontFamily: "'JetBrains Mono', monospace",
@@ -1753,8 +1869,8 @@ export default function BioassayCurveFitter() {
         {/* Right Panel - Charts */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div style={{
-            background: "rgba(12,20,40,0.8)",
-            border: "1px solid rgba(60,100,160,0.15)",
+            background: t.panel,
+            border: `1px solid ${t.panelBorder}`,
             borderRadius: 10,
             padding: 16,
           }}>
@@ -1771,7 +1887,7 @@ export default function BioassayCurveFitter() {
                       onClick={() => setPointView(opt.key)}
                       style={{
                         padding: "5px 10px",
-                        background: pointView === opt.key ? "rgba(0,230,180,0.12)" : "rgba(6,10,20,0.5)",
+                        background: pointView === opt.key ? "rgba(0,230,180,0.12)" : t.btnInactive,
                         border: `1px solid ${pointView === opt.key ? "rgba(0,230,180,0.3)" : "rgba(60,100,160,0.1)"}`,
                         borderRadius: 4,
                         color: pointView === opt.key ? "#00e6b4" : "rgba(160,190,230,0.4)",
@@ -1799,7 +1915,7 @@ export default function BioassayCurveFitter() {
                         onClick={() => setErrorBarType(opt.key)}
                         style={{
                           padding: "5px 8px",
-                          background: errorBarType === opt.key ? "rgba(255,180,50,0.12)" : "rgba(6,10,20,0.5)",
+                          background: errorBarType === opt.key ? "rgba(255,180,50,0.12)" : t.btnInactive,
                           border: `1px solid ${errorBarType === opt.key ? "rgba(255,180,50,0.3)" : "rgba(60,100,160,0.1)"}`,
                           borderRadius: 4,
                           color: errorBarType === opt.key ? "#ffb432" : "rgba(160,190,230,0.4)",
@@ -1835,12 +1951,12 @@ export default function BioassayCurveFitter() {
                   top: 0,
                   left: 0,
                   padding: "4px 8px",
-                  background: "rgba(10,16,30,0.92)",
-                  border: "1px solid rgba(80,120,180,0.25)",
+                  background: t.tooltip,
+                  border: `1px solid ${t.tooltipBorder}`,
                   borderRadius: 4,
                   fontSize: 10,
                   fontFamily: "'JetBrains Mono', monospace",
-                  color: "#c8daf0",
+                  color: t.text,
                   pointerEvents: "none",
                   whiteSpace: "nowrap",
                   zIndex: 10,
@@ -1852,8 +1968,8 @@ export default function BioassayCurveFitter() {
 
           {showResiduals && fitResult && (
             <div style={{
-              background: "rgba(12,20,40,0.8)",
-              border: "1px solid rgba(60,100,160,0.15)",
+              background: t.panel,
+              border: `1px solid ${t.panelBorder}`,
               borderRadius: 10,
               padding: 16,
             }}>
@@ -1871,26 +1987,26 @@ export default function BioassayCurveFitter() {
           {/* Grubbs Outlier Test Panel */}
           {parsedData && hasReplicates && (
             <div style={{
-              background: "rgba(12,20,40,0.8)",
-              border: "1px solid rgba(60,100,160,0.15)",
+              background: t.panel,
+              border: `1px solid ${t.panelBorder}`,
               borderRadius: 10,
               padding: 16,
             }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "rgba(160,190,230,0.7)", textTransform: "uppercase", letterSpacing: 1 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: t.label, textTransform: "uppercase", letterSpacing: 1 }}>
                   Grubbs' Outlier Test
                 </div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <span style={{ fontSize: 9, color: "rgba(140,170,210,0.4)" }}>α =</span>
+                  <span style={{ fontSize: 9, color: t.textDim }}>α =</span>
                   <select
                     value={grubbsAlpha}
                     onChange={(e) => setGrubbsAlpha(parseFloat(e.target.value))}
                     style={{
                       padding: "3px 6px",
-                      background: "rgba(6,10,20,0.8)",
-                      border: "1px solid rgba(60,100,160,0.2)",
+                      background: t.input,
+                      border: `1px solid ${t.inputBorder}`,
                       borderRadius: 4,
-                      color: "#c8daf0",
+                      color: t.text,
                       fontSize: 10,
                       fontFamily: "'JetBrains Mono', monospace",
                       outline: "none",
@@ -1907,7 +2023,7 @@ export default function BioassayCurveFitter() {
                       background: "rgba(255,80,106,0.12)",
                       border: "1px solid rgba(255,80,106,0.3)",
                       borderRadius: 4,
-                      color: "#ff6b8a",
+                      color: t.red,
                       fontSize: 9,
                       fontWeight: 600,
                       cursor: "pointer",
@@ -1939,7 +2055,7 @@ export default function BioassayCurveFitter() {
                       {grubbsResults.totalOutliers > 0 && (
                         <button onClick={excludeAllOutliers} style={{
                           padding: "3px 8px", background: "rgba(255,80,106,0.15)", border: "1px solid rgba(255,80,106,0.25)",
-                          borderRadius: 3, color: "#ff6b8a", fontSize: 8, cursor: "pointer",
+                          borderRadius: 3, color: t.red, fontSize: 8, cursor: "pointer",
                           fontFamily: "'JetBrains Mono', monospace", textTransform: "uppercase",
                         }}>Exclude All</button>
                       )}
@@ -1947,12 +2063,12 @@ export default function BioassayCurveFitter() {
                         <>
                           <button onClick={clearExclusions} style={{
                             padding: "3px 8px", background: "rgba(140,170,210,0.08)", border: "1px solid rgba(140,170,210,0.15)",
-                            borderRadius: 3, color: "rgba(160,190,230,0.6)", fontSize: 8, cursor: "pointer",
+                            borderRadius: 3, color: t.labelDim, fontSize: 8, cursor: "pointer",
                             fontFamily: "'JetBrains Mono', monospace", textTransform: "uppercase",
                           }}>Clear All</button>
                           <button onClick={refitWithoutExcluded} style={{
                             padding: "3px 8px", background: "rgba(59,158,255,0.15)", border: "1px solid rgba(59,158,255,0.3)",
-                            borderRadius: 3, color: "#3b9eff", fontSize: 8, fontWeight: 700, cursor: "pointer",
+                            borderRadius: 3, color: t.blue, fontSize: 8, fontWeight: 700, cursor: "pointer",
                             fontFamily: "'JetBrains Mono', monospace", textTransform: "uppercase",
                           }}>Refit ({excludedIndices.size} excl.)</button>
                         </>
@@ -1975,7 +2091,7 @@ export default function BioassayCurveFitter() {
                             onClick={() => setSelectedGrubbsGroup(isSelected ? null : key)}
                             style={{
                               padding: "5px 8px",
-                              background: isSelected ? "rgba(59,158,255,0.12)" : "rgba(6,10,20,0.4)",
+                              background: isSelected ? "rgba(59,158,255,0.12)" : t.btnInactive,
                               border: `1px solid ${isSelected ? "rgba(59,158,255,0.3)" : hasOutlier ? "rgba(255,80,106,0.15)" : "rgba(60,100,160,0.08)"}`,
                               borderRadius: 4,
                               color: hasOutlier ? "#ff6b8a" : groupExcluded ? "rgba(255,180,50,0.7)" : "rgba(160,190,230,0.6)",
@@ -2010,17 +2126,17 @@ export default function BioassayCurveFitter() {
 
                         return (
                           <div>
-                            <div style={{ fontSize: 10, color: "rgba(160,190,230,0.6)", marginBottom: 6 }}>
-                              Conc: <span style={{ color: "#c8daf0", fontWeight: 600 }}>{gResult.x < 0.01 || gResult.x >= 10000 ? gResult.x.toExponential(3) : gResult.x.toPrecision(5)}</span>
+                            <div style={{ fontSize: 10, color: t.labelDim, marginBottom: 6 }}>
+                              Conc: <span style={{ color: t.text, fontWeight: 600 }}>{gResult.x < 0.01 || gResult.x >= 10000 ? gResult.x.toExponential(3) : gResult.x.toPrecision(5)}</span>
                               {gResult.tested && gResult.result && (
                                 <span style={{ marginLeft: 10 }}>
-                                  G<sub>crit</sub>: <span style={{ color: "#ffb432" }}>{gResult.result.gCrit.toFixed(3)}</span>
+                                  G<sub>crit</sub>: <span style={{ color: t.orange }}>{gResult.result.gCrit.toFixed(3)}</span>
                                 </span>
                               )}
                             </div>
 
                             {!gResult.tested && (
-                              <div style={{ fontSize: 9, color: "rgba(140,170,210,0.4)", fontStyle: "italic" }}>
+                              <div style={{ fontSize: 9, color: t.textDim, fontStyle: "italic" }}>
                                 n={gResult.n}: need n≥3 for Grubbs' test
                               </div>
                             )}
@@ -2062,7 +2178,7 @@ export default function BioassayCurveFitter() {
                                       }}>
                                         {isExcl ? "✕" : "✓"}
                                       </span>
-                                      <span style={{ fontSize: 11, color: "#c8daf0", fontFamily: "'JetBrains Mono', monospace" }}>
+                                      <span style={{ fontSize: 11, color: t.text, fontFamily: "'JetBrains Mono', monospace" }}>
                                         {d.value.toFixed(1)}
                                       </span>
                                       <span style={{
@@ -2085,9 +2201,9 @@ export default function BioassayCurveFitter() {
                                   );
                                 })}
                                 {/* Group stats */}
-                                <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid rgba(60,100,160,0.1)", fontSize: 9, color: "rgba(140,170,210,0.4)", display: "flex", gap: 12 }}>
-                                  <span>Mean: <span style={{ color: "#c8daf0" }}>{gResult.result.mean.toFixed(1)}</span></span>
-                                  <span>SD: <span style={{ color: "#c8daf0" }}>{gResult.result.sd.toFixed(1)}</span></span>
+                                <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid rgba(60,100,160,0.1)", fontSize: 9, color: t.textDim, display: "flex", gap: 12 }}>
+                                  <span>Mean: <span style={{ color: t.text }}>{gResult.result.mean.toFixed(1)}</span></span>
+                                  <span>SD: <span style={{ color: t.text }}>{gResult.result.sd.toFixed(1)}</span></span>
                                   <span>%CV: <span style={{ color: gResult.result.sd / gResult.result.mean * 100 > 20 ? "#ffb432" : "#c8daf0" }}>{(gResult.result.sd / gResult.result.mean * 100).toFixed(1)}%</span></span>
                                 </div>
                               </div>
@@ -2112,7 +2228,7 @@ export default function BioassayCurveFitter() {
               alignItems: "center",
               justifyContent: "center",
               height: 300,
-              color: "rgba(140,170,210,0.3)",
+              color: t.textFaint,
               fontSize: 13,
             }}>
               Enter data and click FIT MODEL to begin
