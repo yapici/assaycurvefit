@@ -851,7 +851,8 @@ function drawResiduals(canvas, xData, yData, fitResult, modelType, theme = {}) {
 }
 
 // ── Sample Data ───────────────────────────────────────────────────
-const SAMPLE_DATA = `Concentration,Rep1,Rep2,Rep3,Rep4,Rep5
+const EXAMPLE_DATASETS = {
+  "Full sigmoid (5 reps, outliers)": `Concentration,Rep1,Rep2,Rep3,Rep4,Rep5
 0.001,0.12,0.15,0.10,0.13,0.11
 0.003,0.14,0.17,0.13,0.15,0.16
 0.01,0.18,0.22,0.19,0.20,0.21
@@ -863,7 +864,110 @@ const SAMPLE_DATA = `Concentration,Rep1,Rep2,Rep3,Rep4,Rep5
 10,4.62,4.78,4.55,4.70,6.25
 30,4.80,4.92,4.76,4.85,4.82
 100,4.88,4.98,4.84,4.90,4.86
-300,4.92,5.02,4.88,3.15,4.94`;
+300,4.92,5.02,4.88,3.15,4.94`,
+
+  "Incomplete top plateau": `Concentration,Rep1,Rep2,Rep3
+0.001,0.08,0.11,0.09
+0.003,0.10,0.13,0.11
+0.01,0.15,0.19,0.16
+0.03,0.28,0.34,0.30
+0.1,0.62,0.71,0.65
+0.3,1.45,1.60,1.50
+1,2.80,3.05,2.88
+3,3.65,3.88,3.72`,
+
+  "Incomplete bottom plateau": `Concentration,Rep1,Rep2,Rep3
+0.3,1.40,1.55,1.45
+1,2.85,3.02,2.90
+3,3.90,4.10,3.95
+10,4.50,4.68,4.55
+30,4.78,4.92,4.82
+100,4.90,5.02,4.94
+300,4.95,5.06,4.98
+1000,4.98,5.08,5.00`,
+
+  "No plateaus (mid-curve only)": `Concentration,Rep1,Rep2,Rep3
+0.1,0.55,0.63,0.58
+0.3,1.30,1.45,1.35
+1,2.70,2.90,2.78
+3,3.60,3.80,3.68
+10,4.15,4.35,4.22
+30,4.45,4.60,4.50`,
+
+  "Steep Hill slope (cooperative)": `Concentration,Rep1,Rep2,Rep3
+0.001,0.10,0.12,0.11
+0.003,0.11,0.13,0.12
+0.01,0.12,0.15,0.13
+0.03,0.14,0.18,0.15
+0.1,0.20,0.25,0.22
+0.3,0.85,1.10,0.95
+1,4.50,4.70,4.58
+3,4.85,5.00,4.90
+10,4.90,5.05,4.95
+30,4.92,5.06,4.96
+100,4.93,5.07,4.97`,
+
+  "Shallow Hill slope": `Concentration,Rep1,Rep2,Rep3
+0.001,0.50,0.58,0.53
+0.003,0.65,0.74,0.68
+0.01,0.90,1.02,0.95
+0.03,1.25,1.38,1.30
+0.1,1.75,1.90,1.82
+0.3,2.30,2.48,2.38
+1,2.90,3.10,2.98
+3,3.35,3.55,3.42
+10,3.70,3.88,3.78
+30,3.95,4.12,4.02
+100,4.15,4.30,4.20
+300,4.30,4.45,4.35`,
+
+  "Decreasing response": `Concentration,Rep1,Rep2,Rep3
+0.001,4.90,5.05,4.95
+0.003,4.88,5.02,4.92
+0.01,4.82,4.98,4.88
+0.03,4.65,4.80,4.72
+0.1,4.10,4.30,4.18
+0.3,3.05,3.25,3.12
+1,1.55,1.72,1.62
+3,0.65,0.78,0.70
+10,0.25,0.35,0.28
+30,0.14,0.20,0.16
+100,0.10,0.15,0.12`,
+
+  "Asymmetric (5PL)": `Concentration,Rep1,Rep2,Rep3
+0.001,0.10,0.13,0.11
+0.003,0.12,0.16,0.13
+0.01,0.18,0.24,0.20
+0.03,0.35,0.45,0.38
+0.1,0.90,1.10,0.98
+0.3,2.20,2.50,2.32
+1,3.80,4.05,3.90
+3,4.45,4.62,4.52
+10,4.70,4.85,4.76
+30,4.82,4.95,4.86
+100,4.88,5.00,4.92
+300,4.92,5.03,4.95`,
+
+  "High variability": `Concentration,Rep1,Rep2,Rep3,Rep4,Rep5
+0.001,0.05,0.22,0.12,0.18,0.08
+0.01,0.10,0.30,0.18,0.25,0.14
+0.1,0.40,0.85,0.60,0.72,0.48
+1,2.10,3.40,2.70,3.15,2.35
+10,4.00,5.20,4.55,4.90,4.15
+100,4.50,5.40,4.90,5.15,4.65
+1000,4.60,5.50,5.00,5.20,4.75`,
+
+  "Simple (no replicates)": `Concentration,Response
+0.001,0.10
+0.01,0.15
+0.1,0.55
+1,2.80
+10,4.55
+100,4.90
+1000,4.98`,
+};
+
+const SAMPLE_DATA = EXAMPLE_DATASETS["Full sigmoid (5 reps, outliers)"];
 
 // ── Main Component ────────────────────────────────────────────────
 export default function BioassayCurveFitter() {
@@ -873,6 +977,38 @@ export default function BioassayCurveFitter() {
   const [fixedMin, setFixedMin] = useState("");
   const [fixedMax, setFixedMax] = useState("");
   const [fixedHill, setFixedHill] = useState("1");
+
+  // Pre-populate fixed param fields from data when switching to constrained models
+  useEffect(() => {
+    if (!["1PL", "2PL", "3PL"].includes(modelType)) return;
+    // Try to estimate from parsedData, or fall back to raw data parsing
+    let yVals = null;
+    if (parsedData && parsedData.yData && parsedData.yData.length > 0) {
+      yVals = parsedData.yData;
+    } else {
+      try {
+        const { yData } = parseData(rawData);
+        if (yData && yData.length > 0) yVals = yData;
+      } catch (e) { /* ignore */ }
+    }
+    if (!yVals) return;
+
+    if (modelType === "1PL" || modelType === "2PL") {
+      // Only pre-populate if fields are empty
+      if (fixedMin === "") {
+        const sorted = [...yVals].sort((a, b) => a - b);
+        const lowN = Math.max(1, Math.floor(sorted.length * 0.2));
+        const estMin = sorted.slice(0, lowN).reduce((a, b) => a + b, 0) / lowN;
+        setFixedMin(estMin.toPrecision(4));
+      }
+      if (fixedMax === "") {
+        const sorted = [...yVals].sort((a, b) => a - b);
+        const lowN = Math.max(1, Math.floor(sorted.length * 0.2));
+        const estMax = sorted.slice(-lowN).reduce((a, b) => a + b, 0) / lowN;
+        setFixedMax(estMax.toPrecision(4));
+      }
+    }
+  }, [modelType]); // only on model switch, not on every data change
   const [fitResult, setFitResult] = useState(null);
   const [error, setError] = useState(null);
   const [parsedData, setParsedData] = useState(null);
@@ -1624,8 +1760,43 @@ export default function BioassayCurveFitter() {
             borderRadius: 10,
             padding: 16,
           }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
-              Data Input
+            <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>Data Input</span>
+              <select
+                onChange={(e) => {
+                  if (e.target.value && EXAMPLE_DATASETS[e.target.value]) {
+                    setRawData(EXAMPLE_DATASETS[e.target.value]);
+                    setParsedData(null);
+                    setFitResult(null);
+                    setComparison(null);
+                    setError(null);
+                    setGrubbsResults(null);
+                    setShowOutliers(false);
+                    setSelectedGrubbsGroup(null);
+                    setExcludedIndices(new Set());
+                    setBgStats(null);
+                    setFixedMin("");
+                    setFixedMax("");
+                  }
+                  e.target.value = "";
+                }}
+                style={{
+                  padding: "2px 6px",
+                  background: t.input,
+                  border: `1px solid ${t.inputBorder}`,
+                  borderRadius: 4,
+                  color: t.textDim,
+                  fontSize: 9,
+                  fontFamily: "'JetBrains Mono', monospace",
+                  outline: "none",
+                  cursor: "pointer",
+                }}
+              >
+                <option value="">Examples...</option>
+                {Object.keys(EXAMPLE_DATASETS).map(name => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
             </div>
             <textarea
               value={rawData}
