@@ -1376,6 +1376,15 @@ export default function BioassayCurveFitter() {
   useEffect(() => {
     if (mainCanvasRef.current && parsedData) {
       drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices }, t);
+    } else if (mainCanvasRef.current) {
+      const canvas = mainCanvasRef.current;
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = canvas.getBoundingClientRect().width * dpr;
+      canvas.height = canvas.getBoundingClientRect().height * dpr;
+      ctx.scale(dpr, dpr);
+      ctx.fillStyle = t.canvas || "#0a0f1a";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
   }, [parsedData, fitResult, activeModel, pointView, errorBarType, chartOutlierIndices, excludedIndices, t]);
 
