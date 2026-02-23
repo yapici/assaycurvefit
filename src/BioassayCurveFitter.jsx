@@ -3,6 +3,9 @@ import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 // ── Numerical Engine ──────────────────────────────────────────────
 // 4PL: y = D + (A - D) / (1 + (x/C)^B)
 // 5PL: y = Bottom + (Top - Bottom) / (1 + (EC50/x)^Hill)^S
+// 3PL: 4PL with B fixed to 1 (Hill slope = 1)
+// 2PL: 4PL with A and D fixed (fit B and C only)
+// 1PL: 4PL with A, B, D fixed (fit C / EC50 only)
 
 function model4PL(x, params) {
   const [A, B, C, D] = params;
@@ -14,6 +17,95 @@ function model5PL(x, params) {
   const [Bottom, Hill, EC50, Top, S] = params;
   if (x <= 0) return Bottom;
   return Bottom + (Top - Bottom) / Math.pow(1 + Math.pow(EC50 / x, Hill), S);
+}
+
+// Create a constrained model function that wraps the full 4PL
+// fixedMap: object mapping param index -> fixed value, e.g. { 1: 1.0 } fixes B=1
+function makeConstrainedModel(fixedMap) {
+  return function constrainedModel(x, freeParams) {
+    // Expand free params into full 4PL params
+    const fullParams = [0, 0, 0, 0];
+    let freeIdx = 0;
+    for (let i = 0; i < 4; i++) {
+      if (i in fixedMap) {
+        fullParams[i] = fixedMap[i];
+      } else {
+        fullParams[i] = freeParams[freeIdx++];
+      }
+    }
+    return model4PL(x, fullParams);
+  };
+}
+
+// Fit constrained model, returns result with full 4PL params for display
+function fitConstrainedModel(xData, yData, fixedMap) {
+  const freeIndices = [0, 1, 2, 3].filter(i => !(i in fixedMap));
+  const k = freeIndices.length;
+  const constrainedFn = makeConstrainedModel(fixedMap);
+
+  // Initial estimates from full 4PL estimates
+  const fullInit = estimateInitialParams(xData, yData, false);
+  // Override fixed params in init
+  for (const [idx, val] of Object.entries(fixedMap)) {
+    fullInit[parseInt(idx)] = val;
+  }
+  const freeInit = freeIndices.map(i => fullInit[i]);
+
+  // Multi-start
+  const perturbations = [freeInit];
+  // Perturb EC50 (which is index 2 in full params)
+  const ec50FreeIdx = freeIndices.indexOf(2);
+  if (ec50FreeIdx >= 0) {
+    perturbations.push(freeInit.map((p, i) => i === ec50FreeIdx ? p * 2 : p));
+    perturbations.push(freeInit.map((p, i) => i === ec50FreeIdx ? p * 0.5 : p));
+  }
+  // Perturb slope if free
+  const slopeFreeIdx = freeIndices.indexOf(1);
+  if (slopeFreeIdx >= 0) {
+    perturbations.push(freeInit.map((p, i) => i === slopeFreeIdx ? -p : p));
+  }
+
+  let best = null;
+  for (const startParams of perturbations) {
+    try {
+      // Wrap to keep EC50-like params positive
+      const result = levenbergMarquardt(xData, yData, constrainedFn, startParams);
+      // Expand and check EC50 (index 2 in full params) is positive
+      const fullCheck = [0, 0, 0, 0];
+      let fi = 0;
+      for (let i = 0; i < 4; i++) {
+        if (i in fixedMap) fullCheck[i] = fixedMap[i];
+        else fullCheck[i] = result.params[fi++];
+      }
+      if (fullCheck[2] <= 0) continue; // skip if EC50 is negative
+      if (!best || result.ssr < best.ssr) best = result;
+    } catch (e) { /* skip */ }
+  }
+  if (!best) return null;
+
+  // Expand to full 4PL params for display
+  const fullParams = [0, 0, 0, 0];
+  let freeIdx = 0;
+  for (let i = 0; i < 4; i++) {
+    if (i in fixedMap) fullParams[i] = fixedMap[i];
+    else fullParams[i] = best.params[freeIdx++];
+  }
+
+  const n = xData.length;
+  const yPred = xData.map(x => model4PL(x, fullParams));
+  const r2 = rSquared(yData, yPred);
+  const rmse = Math.sqrt(best.ssr / n);
+  const aicc = computeAICc(n, k, best.ssr);
+  const bic = computeBIC(n, k, best.ssr);
+  const aic = computeAIC(n, k, best.ssr);
+
+  return { params: fullParams, ssr: best.ssr, converged: best.converged, r2, rmse, yPred, aicc, bic, aic, k, n, bioEC50: null };
+}
+
+// Get the drawing/evaluation model function for a given model type
+// 1PL, 2PL, 3PL, 4PL all use model4PL (with full 4-param vector)
+function getModelFn(mType) {
+  return mType === "5PL" ? model5PL : model4PL;
 }
 
 function residuals(xData, yData, modelFn, params) {
@@ -125,11 +217,17 @@ function levenbergMarquardt(xData, yData, modelFn, initialParams, options = {}) 
 
     const newParams = params.map((p, i) => p + delta[i]);
     
-    // Keep C positive
+    // Keep EC50/C positive for known models
     if (modelFn === model4PL && newParams[2] <= 0) newParams[2] = Math.abs(newParams[2]) || 1e-6;
     if (modelFn === model5PL) {
       if (newParams[2] <= 0) newParams[2] = Math.abs(newParams[2]) || 1e-6;
       if (newParams[4] <= 0) newParams[4] = Math.abs(newParams[4]) || 0.1;
+    }
+    // For constrained models (closures), keep all params finite and EC50-like params positive
+    if (modelFn !== model4PL && modelFn !== model5PL) {
+      for (let i = 0; i < newParams.length; i++) {
+        if (!isFinite(newParams[i])) newParams[i] = params[i];
+      }
     }
 
     const newSSR = sumSquaredResiduals(xData, yData, modelFn, newParams);
@@ -446,7 +544,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
   // Generate curve points for Y range
   const curveY = [];
   if (fitResult) {
-    const modelFn = modelType === "4PL" ? model4PL : model5PL;
+    const modelFn = getModelFn(modelType);
     for (let i = 0; i <= 200; i++) {
       const lx = xMin + (xMax - xMin) * (i / 200);
       curveY.push(modelFn(Math.pow(10, lx), fitResult.params));
@@ -518,10 +616,12 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
 
   // Fitted curve
   if (fitResult) {
-    const modelFn = modelType === "4PL" ? model4PL : model5PL;
-    ctx.strokeStyle = modelType === "4PL" ? (t.blue || "#3b9eff") : (t.purple || "#a855f7");
+    const modelFn = getModelFn(modelType);
+    const curveColor = modelType === "5PL" ? (t.purple || "#a855f7") : (t.blue || "#3b9eff");
+    const curveShadow = modelType === "5PL" ? (t.purpleBg || "rgba(168,85,247,0.4)") : (t.blueBg || "rgba(59,158,255,0.4)");
+    ctx.strokeStyle = curveColor;
     ctx.lineWidth = 2.5;
-    ctx.shadowColor = modelType === "4PL" ? (t.blueBg || "rgba(59,158,255,0.4)") : (t.purpleBg || "rgba(168,85,247,0.4)");
+    ctx.shadowColor = curveShadow;
     ctx.shadowBlur = 8;
     ctx.beginPath();
     for (let i = 0; i <= 200; i++) {
@@ -707,7 +807,7 @@ function drawResiduals(canvas, xData, yData, fitResult, modelType, theme = {}) {
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;
 
-  const modelFn = modelType === "4PL" ? model4PL : model5PL;
+  const modelFn = getModelFn(modelType);
   const res = xData.map((x, i) => yData[i] - modelFn(x, fitResult.params));
   const logX = xData.filter(x => x > 0).map(x => Math.log10(x));
 
@@ -769,6 +869,10 @@ const SAMPLE_DATA = `Concentration,Rep1,Rep2,Rep3,Rep4,Rep5
 export default function BioassayCurveFitter() {
   const [rawData, setRawData] = useState(SAMPLE_DATA);
   const [modelType, setModelType] = useState("Auto");
+  const [normalize, setNormalize] = useState(false);
+  const [fixedMin, setFixedMin] = useState("");
+  const [fixedMax, setFixedMax] = useState("");
+  const [fixedHill, setFixedHill] = useState("1");
   const [fitResult, setFitResult] = useState(null);
   const [error, setError] = useState(null);
   const [parsedData, setParsedData] = useState(null);
@@ -1032,10 +1136,22 @@ export default function BioassayCurveFitter() {
         setBgStats(null);
       }
 
-      setParsedData({ xData, yData, yRaw, bgSubtracted: bgSub ? bgSub.mean : 0 });
+      // Normalization: scale to 0-100% using raw min/max
+      let normMin = 0, normMax = 1, normalized = false;
+      if (normalize) {
+        normMin = Math.min(...yData);
+        normMax = Math.max(...yData);
+        const range = normMax - normMin;
+        if (range > 0) {
+          yData = yData.map(y => ((y - normMin) / range) * 100);
+          normalized = true;
+        }
+      }
+
+      setParsedData({ xData, yData, yRaw, bgSubtracted: bgSub ? bgSub.mean : 0, normMin, normMax, normalized });
 
       if (modelType === "Auto") {
-        // Fit both models and compare
+        // Fit 4PL and 5PL, compare
         const fit4 = fitModel(xData, yData, model4PL, false);
         const fit5 = xData.length >= 5 ? fitModel(xData, yData, model5PL, true) : null;
 
@@ -1050,7 +1166,6 @@ export default function BioassayCurveFitter() {
         // Compare using AICc (preferred for small n) and BIC
         const deltaAICc = fit4.aicc - fit5.aicc; // positive => 5PL better
         const deltaBIC = fit4.bic - fit5.bic;
-        // Check if 5PL S parameter is close to 1 (meaning 5PL collapses to 4PL)
         const eParam = fit5.params[4];
         const eNearOne = Math.abs(eParam - 1) < 0.05;
 
@@ -1065,7 +1180,6 @@ export default function BioassayCurveFitter() {
           selected = "4PL";
           reason = `4PL preferred: ΔAICc=${deltaAICc.toFixed(1)} favors simpler model`;
         } else {
-          // Within 2 AICc units: prefer simpler model (parsimony)
           selected = "4PL";
           reason = `Models within ΔAICc=${deltaAICc.toFixed(1)}; 4PL preferred by parsimony`;
         }
@@ -1073,10 +1187,35 @@ export default function BioassayCurveFitter() {
         setComparison({ fit4PL: fit4, fit5PL: fit5, selected, reason });
         setActiveModel(selected);
         setFitResult(selected === "4PL" ? fit4 : fit5);
+      } else if (modelType === "1PL") {
+        // Fix A, B=fixedHill, D; fit only C (EC50)
+        const aVal = parseFloat(fixedMin), dVal = parseFloat(fixedMax), hVal = parseFloat(fixedHill);
+        if (isNaN(aVal) || isNaN(dVal)) { setError("1PL requires min and max asymptote values"); return; }
+        if (isNaN(hVal) || hVal === 0) { setError("1PL requires a non-zero Hill slope value"); return; }
+        const result = fitConstrainedModel(xData, yData, { 0: aVal, 1: hVal, 3: dVal });
+        if (!result) { setError("1PL fitting failed. Check your data."); return; }
+        setActiveModel("1PL");
+        setFitResult(result);
+      } else if (modelType === "2PL") {
+        // Fix A and D; fit B and C
+        const aVal = parseFloat(fixedMin), dVal = parseFloat(fixedMax);
+        if (isNaN(aVal) || isNaN(dVal)) { setError("2PL requires min and max asymptote values"); return; }
+        const result = fitConstrainedModel(xData, yData, { 0: aVal, 3: dVal });
+        if (!result) { setError("2PL fitting failed. Check your data."); return; }
+        setActiveModel("2PL");
+        setFitResult(result);
+      } else if (modelType === "3PL") {
+        // 4PL with B fixed to fixedHill; fit A, C, D
+        const hVal = parseFloat(fixedHill);
+        if (isNaN(hVal) || hVal === 0) { setError("3PL requires a non-zero Hill slope value"); return; }
+        const result = fitConstrainedModel(xData, yData, { 1: hVal });
+        if (!result) { setError("3PL fitting failed. Check your data."); return; }
+        setActiveModel("3PL");
+        setFitResult(result);
       } else {
-        // Manual model selection
+        // Manual 4PL or 5PL
         if (modelType === "5PL" && xData.length < 5) { setError("Need at least 5 data points for 5PL"); return; }
-        const modelFn = modelType === "4PL" ? model4PL : model5PL;
+        const modelFn = getModelFn(modelType);
         const result = fitModel(xData, yData, modelFn, modelType === "5PL");
         if (!result) { setError("Fitting failed to converge. Check your data."); return; }
         setActiveModel(modelType);
@@ -1086,7 +1225,7 @@ export default function BioassayCurveFitter() {
     } catch (e) {
       setError("Error: " + e.message);
     }
-  }, [rawData, modelType, parseData, bgEnabled, bgRawData, parseBgValues]);
+  }, [rawData, modelType, parseData, bgEnabled, bgRawData, parseBgValues, normalize, fixedMin, fixedMax, fixedHill]);
 
   // Merged set of outlier + excluded indices for chart display
   const chartOutlierIndices = useMemo(() => {
@@ -1180,7 +1319,7 @@ export default function BioassayCurveFitter() {
 
       // If no data point nearby, show curve value
       if (!nearestInfo && fitResult) {
-        const modelFn = activeModel === "4PL" ? model4PL : model5PL;
+        const modelFn = getModelFn(activeModel);
         const xVal = Math.pow(10, logXMouse);
         const yFit = modelFn(xVal, fitResult.params);
         const cyFit = meta.toCanvasY(yFit);
@@ -1255,9 +1394,15 @@ export default function BioassayCurveFitter() {
     };
   }, [parsedData, fitResult, activeModel, pointView]);
 
-  const paramLabels = activeModel === "4PL"
-    ? ["A (min)", "B (slope)", "C (EC50)", "D (max)"]
-    : ["Bottom", "Hill", "EC50", "Top", "S (asymmetry)"];
+  const paramLabels = activeModel === "5PL"
+    ? ["Bottom", "Hill", "EC50", "Top", "S (asymmetry)"]
+    : ["A (min)", "B (slope)", "C (EC50)", "D (max)"];
+
+  // Which params are fixed for constrained models (indices into 4PL param vector)
+  const fixedParams = activeModel === "1PL" ? new Set([0, 1, 3])
+    : activeModel === "2PL" ? new Set([0, 3])
+    : activeModel === "3PL" ? new Set([1])
+    : new Set();
 
   const hasReplicates = useMemo(() => {
     if (!parsedData) return false;
@@ -1328,21 +1473,38 @@ export default function BioassayCurveFitter() {
       setActiveModel(selected);
       setFitResult(selected === "4PL" ? fit4 : fit5);
       setComparison({ fit4PL: fit4, fit5PL: fit5, selected, reason: "Refit after exclusion" });
+    } else if (["1PL", "2PL", "3PL"].includes(modelType)) {
+      const aVal = parseFloat(fixedMin), dVal = parseFloat(fixedMax), hVal = parseFloat(fixedHill);
+      if (["1PL", "2PL"].includes(modelType) && (isNaN(aVal) || isNaN(dVal))) {
+        setError(`${modelType} requires min and max asymptote values`); return;
+      }
+      if (["1PL", "3PL"].includes(modelType) && (isNaN(hVal) || hVal === 0)) {
+        setError(`${modelType} requires a non-zero Hill slope value`); return;
+      }
+      const fixedMap = modelType === "1PL" ? { 0: aVal, 1: hVal, 3: dVal }
+        : modelType === "2PL" ? { 0: aVal, 3: dVal }
+        : { 1: hVal };
+      const result = fitConstrainedModel(xFiltered, yFiltered, fixedMap);
+      if (!result) { setError("Fitting failed"); return; }
+      setActiveModel(modelType);
+      setFitResult(result);
     } else {
-      const modelFn = modelType === "4PL" ? model4PL : model5PL;
+      const modelFn = getModelFn(modelType);
       const result = fitModel(xFiltered, yFiltered, modelFn, modelType === "5PL");
       if (!result) { setError("Fitting failed"); return; }
       setActiveModel(modelType);
       setFitResult(result);
     }
-  }, [parsedData, excludedIndices, modelType]);
+  }, [parsedData, excludedIndices, modelType, fixedMin, fixedMax, fixedHill]);
 
   const exportCSV = useCallback(() => {
     if (!parsedData || !fitResult) return;
-    const modelFn = activeModel === "4PL" ? model4PL : model5PL;
+    const modelFn = getModelFn(activeModel);
     const hasBg = parsedData.bgSubtracted > 0;
     let csv = "";
+    csv += `# Model: ${activeModel}\n`;
     if (hasBg) csv += `# Background subtracted: ${parsedData.bgSubtracted.toFixed(2)}\n`;
+    if (parsedData.normalized) csv += `# Normalized: 0-100% (min=${parsedData.normMin.toFixed(4)}, max=${parsedData.normMax.toFixed(4)})\n`;
     csv += hasBg
       ? "Concentration,Raw,BgSubtracted,Fitted,Residual\n"
       : "Concentration,Observed,Fitted,Residual\n";
@@ -1500,6 +1662,7 @@ export default function BioassayCurveFitter() {
               <p style={{ fontSize: 9, color: t.teal, marginTop: 4 }}>
                 Parsed: {parsedData.xData.length} data points across {new Set(parsedData.xData).size} concentrations
                 {parsedData.bgSubtracted ? ` (bg: −${parsedData.bgSubtracted.toFixed(1)})` : ""}
+                {parsedData.normalized ? " (normalized 0-100%)" : ""}
               </p>
             )}
           </div>
@@ -1591,17 +1754,25 @@ export default function BioassayCurveFitter() {
             <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
               Model
             </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              {["Auto", "4PL", "5PL"].map(m => {
-                const colors = { Auto: { active: t.teal, bg: t.tealBg, border: t.tealBorder }, "4PL": { active: t.blue, bg: t.blueBg, border: t.blueBorder }, "5PL": { active: t.purple, bg: t.purpleBg, border: t.purpleBorder } };
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {["Auto", "1PL", "2PL", "3PL", "4PL", "5PL"].map(m => {
+                const colors = {
+                  Auto: { active: t.teal, bg: t.tealBg, border: t.tealBorder },
+                  "1PL": { active: t.orange, bg: t.orangeBg, border: t.orangeBorder },
+                  "2PL": { active: t.orange, bg: t.orangeBg, border: t.orangeBorder },
+                  "3PL": { active: t.blue, bg: t.blueBg, border: t.blueBorder },
+                  "4PL": { active: t.blue, bg: t.blueBg, border: t.blueBorder },
+                  "5PL": { active: t.purple, bg: t.purpleBg, border: t.purpleBorder },
+                };
                 const c = colors[m];
                 return (
                   <button
                     key={m}
                     onClick={() => setModelType(m)}
                     style={{
-                      flex: 1,
-                      padding: "10px 0",
+                      flex: modelType === m ? 2 : 1,
+                      minWidth: 40,
+                      padding: "8px 0",
                       background: modelType === m ? c.bg : t.btnInactive,
                       border: `1px solid ${modelType === m ? c.border : "rgba(60,100,160,0.15)"}`,
                       borderRadius: 6,
@@ -1620,11 +1791,147 @@ export default function BioassayCurveFitter() {
             </div>
             <div style={{ marginTop: 10, fontSize: 10, color: t.textDim, lineHeight: 1.6 }}>
               {modelType === "Auto"
-                ? "Fits both models; selects best via AICc with parsimony preference"
-                : modelType === "4PL"
-                  ? "y = D + (A−D) / (1 + (x/C)^B)"
-                  : "y = Bot + (Top−Bot) / (1 + (EC50/x)^Hill)^S"}
+                ? "Fits 4PL and 5PL; selects best via AICc with parsimony preference"
+                : modelType === "1PL"
+                  ? "Fix asymptotes and Hill slope; fit EC50 only (1 free parameter)"
+                  : modelType === "2PL"
+                    ? "Fix asymptotes; fit Hill slope and EC50 (2 free parameters)"
+                    : modelType === "3PL"
+                      ? "Fix Hill slope; fit asymptotes and EC50 (3 free parameters)"
+                      : modelType === "4PL"
+                        ? "y = D + (A−D) / (1 + (x/C)^B)"
+                        : "y = Bot + (Top−Bot) / (1 + (EC50/x)^Hill)^S"}
             </div>
+
+            {/* Constraint inputs for 1PL, 2PL, 3PL */}
+            {["1PL", "2PL", "3PL"].includes(modelType) && (
+              <div style={{
+                marginTop: 10,
+                padding: "10px 12px",
+                background: "rgba(255,180,50,0.06)",
+                border: "1px solid rgba(255,180,50,0.15)",
+                borderRadius: 6,
+              }}>
+                <div style={{ fontSize: 9, color: t.orange, fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  Fixed Parameters
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {(modelType === "1PL" || modelType === "2PL") && (
+                    <>
+                      <div style={{ flex: 1, minWidth: 60 }}>
+                        <label style={{ fontSize: 8, color: t.textDim, display: "block", marginBottom: 3 }}>Min (A)</label>
+                        <input
+                          type="number"
+                          value={fixedMin}
+                          onChange={(e) => setFixedMin(e.target.value)}
+                          placeholder="e.g. 0"
+                          style={{
+                            width: "100%",
+                            padding: "5px 8px",
+                            background: t.input,
+                            border: `1px solid ${fixedMin === "" ? "rgba(255,180,50,0.3)" : t.inputBorder}`,
+                            borderRadius: 4,
+                            color: t.text,
+                            fontSize: 11,
+                            fontFamily: "'JetBrains Mono', monospace",
+                            outline: "none",
+                          }}
+                        />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 60 }}>
+                        <label style={{ fontSize: 8, color: t.textDim, display: "block", marginBottom: 3 }}>Max (D)</label>
+                        <input
+                          type="number"
+                          value={fixedMax}
+                          onChange={(e) => setFixedMax(e.target.value)}
+                          placeholder="e.g. 100"
+                          style={{
+                            width: "100%",
+                            padding: "5px 8px",
+                            background: t.input,
+                            border: `1px solid ${fixedMax === "" ? "rgba(255,180,50,0.3)" : t.inputBorder}`,
+                            borderRadius: 4,
+                            color: t.text,
+                            fontSize: 11,
+                            fontFamily: "'JetBrains Mono', monospace",
+                            outline: "none",
+                          }}
+                        />
+                      </div>
+                    </>
+                  )}
+                  {(modelType === "1PL" || modelType === "3PL") && (
+                    <div style={{ flex: 1, minWidth: 60 }}>
+                      <label style={{ fontSize: 8, color: t.textDim, display: "block", marginBottom: 3 }}>Hill slope (B)</label>
+                      <input
+                        type="number"
+                        value={fixedHill}
+                        onChange={(e) => setFixedHill(e.target.value)}
+                        placeholder="1"
+                        style={{
+                          width: "100%",
+                          padding: "5px 8px",
+                          background: t.input,
+                          border: `1px solid ${t.inputBorder}`,
+                          borderRadius: 4,
+                          color: t.text,
+                          fontSize: 11,
+                          fontFamily: "'JetBrains Mono', monospace",
+                          outline: "none",
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+                <p style={{ fontSize: 8, color: t.textDim, marginTop: 6 }}>
+                  {modelType === "3PL" ? "Hill slope is fixed; asymptotes are fitted from data"
+                    : modelType === "2PL" ? "Asymptotes are fixed; Hill slope and EC50 are fitted"
+                    : "All parameters fixed except EC50"}
+                </p>
+              </div>
+            )}
+
+            {/* Normalize toggle */}
+            <div style={{
+              marginTop: 10,
+              paddingTop: 10,
+              borderTop: `1px solid ${t.panelBorder}`,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}>
+              <button
+                onClick={() => setNormalize(!normalize)}
+                style={{
+                  width: 36, height: 20,
+                  borderRadius: 10,
+                  border: `1px solid ${normalize ? t.tealBorder : "rgba(60,100,160,0.15)"}`,
+                  background: normalize ? t.tealBg : t.btnInactive,
+                  cursor: "pointer",
+                  position: "relative",
+                  transition: "all 0.2s",
+                  padding: 0,
+                }}
+              >
+                <div style={{
+                  width: 14, height: 14,
+                  borderRadius: 7,
+                  background: normalize ? (t.teal || "#00e6b4") : "rgba(140,170,210,0.3)",
+                  position: "absolute",
+                  top: 2,
+                  left: normalize ? 18 : 2,
+                  transition: "all 0.2s",
+                }} />
+              </button>
+              <span style={{ fontSize: 10, color: normalize ? t.teal : t.textDim }}>
+                Normalize (0-100%)
+              </span>
+            </div>
+            {normalize && (
+              <p style={{ fontSize: 8, color: t.textDim, marginTop: 4 }}>
+                Responses scaled to 0-100% using raw min/max before fitting
+              </p>
+            )}
           </div>
 
           {/* Model Comparison Panel (Auto mode) */}
@@ -1778,16 +2085,26 @@ export default function BioassayCurveFitter() {
             }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 12, textTransform: "uppercase", letterSpacing: 1, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span>Fit Parameters</span>
-                <span style={{ color: activeModel === "4PL" ? t.blue : t.purple, fontSize: 10 }}>{activeModel}</span>
+                <span style={{ color: activeModel === "5PL" ? t.purple : ["1PL","2PL"].includes(activeModel) ? t.orange : t.blue, fontSize: 10 }}>{activeModel}</span>
               </div>
               {paramLabels.map((label, i) => (
                 <div key={i} style={{
                   display: "flex",
                   justifyContent: "space-between",
+                  alignItems: "center",
                   padding: "6px 0",
                   borderBottom: i < paramLabels.length - 1 ? "1px solid rgba(60,100,160,0.08)" : "none",
                 }}>
-                  <span style={{ fontSize: 11, color: t.labelDim }}>{label}</span>
+                  <span style={{ fontSize: 11, color: t.labelDim, display: "flex", alignItems: "center", gap: 4 }}>
+                    {label}
+                    {fixedParams.has(i) && (
+                      <span style={{
+                        fontSize: 7, padding: "1px 4px", borderRadius: 3,
+                        background: "rgba(255,180,50,0.12)", border: "1px solid rgba(255,180,50,0.25)",
+                        color: t.orange, fontWeight: 600, textTransform: "uppercase",
+                      }}>fixed</span>
+                    )}
+                  </span>
                   <span style={{
                     fontSize: 12,
                     fontWeight: 600,
