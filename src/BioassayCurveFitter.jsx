@@ -1669,6 +1669,29 @@ export default function BioassayCurveFitter() {
     URL.revokeObjectURL(url);
   }, [parsedData, fitResult, activeModel]);
 
+  const exportImage = useCallback((format) => {
+    const canvas = mainCanvasRef.current;
+    if (!canvas) return;
+    const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
+    const quality = format === "jpeg" ? 0.95 : undefined;
+    // For JPEG, fill with background color first (canvas transparency becomes black)
+    let exportCanvas = canvas;
+    if (format === "jpeg") {
+      exportCanvas = document.createElement("canvas");
+      exportCanvas.width = canvas.width;
+      exportCanvas.height = canvas.height;
+      const ctx = exportCanvas.getContext("2d");
+      ctx.fillStyle = t.canvas || "#0a0f1a";
+      ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+      ctx.drawImage(canvas, 0, 0);
+    }
+    const dataUrl = exportCanvas.toDataURL(mimeType, quality);
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = `bioassay_${activeModel}_fit.${format}`;
+    a.click();
+  }, [activeModel, t]);
+
   const interpolate = useCallback((targetY) => {
     if (!fitResult) return null;
     const [A, B, C, D] = fitResult.params;
@@ -2459,25 +2482,81 @@ export default function BioassayCurveFitter() {
             borderRadius: 10,
             padding: 16,
           }}>
-            {/* Point view toggle */}
-            {parsedData && hasReplicates && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            {/* Point view toggle + export buttons */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {parsedData && hasReplicates && (
+                  <>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {[
+                        { key: "individual", label: "Individual Points" },
+                        { key: "errorbars", label: "Error Bars" },
+                      ].map(opt => (
+                        <button
+                          key={opt.key}
+                          onClick={() => setPointView(opt.key)}
+                          style={{
+                            padding: "5px 10px",
+                            background: pointView === opt.key ? "rgba(0,230,180,0.12)" : t.btnInactive,
+                            border: `1px solid ${pointView === opt.key ? "rgba(0,230,180,0.3)" : "rgba(60,100,160,0.1)"}`,
+                            borderRadius: 4,
+                            color: pointView === opt.key ? "#00e6b4" : "rgba(160,190,230,0.4)",
+                            fontSize: 9,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            fontFamily: "'JetBrains Mono', monospace",
+                            textTransform: "uppercase",
+                            letterSpacing: 0.5,
+                            transition: "all 0.15s",
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                    {pointView === "errorbars" && (
+                      <div style={{ display: "flex", gap: 4 }}>
+                        {[
+                          { key: "sd", label: "±SD" },
+                          { key: "sem", label: "±SEM" },
+                        ].map(opt => (
+                          <button
+                            key={opt.key}
+                            onClick={() => setErrorBarType(opt.key)}
+                            style={{
+                              padding: "5px 8px",
+                              background: errorBarType === opt.key ? "rgba(255,180,50,0.12)" : t.btnInactive,
+                              border: `1px solid ${errorBarType === opt.key ? "rgba(255,180,50,0.3)" : "rgba(60,100,160,0.1)"}`,
+                              borderRadius: 4,
+                              color: errorBarType === opt.key ? "#ffb432" : "rgba(160,190,230,0.4)",
+                              fontSize: 9,
+                              fontWeight: 600,
+                              cursor: "pointer",
+                              fontFamily: "'JetBrains Mono', monospace",
+                              transition: "all 0.15s",
+                            }}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              {fitResult && (
                 <div style={{ display: "flex", gap: 4 }}>
-                  {[
-                    { key: "individual", label: "Individual Points" },
-                    { key: "errorbars", label: "Error Bars" },
-                  ].map(opt => (
+                  {["PNG", "JPEG"].map(fmt => (
                     <button
-                      key={opt.key}
-                      onClick={() => setPointView(opt.key)}
+                      key={fmt}
+                      onClick={() => exportImage(fmt.toLowerCase())}
                       style={{
-                        padding: "5px 10px",
-                        background: pointView === opt.key ? "rgba(0,230,180,0.12)" : t.btnInactive,
-                        border: `1px solid ${pointView === opt.key ? "rgba(0,230,180,0.3)" : "rgba(60,100,160,0.1)"}`,
+                        padding: "4px 8px",
+                        background: t.btnInactive,
+                        border: `1px solid rgba(60,100,160,0.1)`,
                         borderRadius: 4,
-                        color: pointView === opt.key ? "#00e6b4" : "rgba(160,190,230,0.4)",
-                        fontSize: 9,
-                        fontWeight: 600,
+                        color: "rgba(160,190,230,0.4)",
+                        fontSize: 8,
                         cursor: "pointer",
                         fontFamily: "'JetBrains Mono', monospace",
                         textTransform: "uppercase",
@@ -2485,39 +2564,12 @@ export default function BioassayCurveFitter() {
                         transition: "all 0.15s",
                       }}
                     >
-                      {opt.label}
+                      {fmt}
                     </button>
                   ))}
                 </div>
-                {pointView === "errorbars" && (
-                  <div style={{ display: "flex", gap: 4, marginLeft: 4 }}>
-                    {[
-                      { key: "sd", label: "±SD" },
-                      { key: "sem", label: "±SEM" },
-                    ].map(opt => (
-                      <button
-                        key={opt.key}
-                        onClick={() => setErrorBarType(opt.key)}
-                        style={{
-                          padding: "5px 8px",
-                          background: errorBarType === opt.key ? "rgba(255,180,50,0.12)" : t.btnInactive,
-                          border: `1px solid ${errorBarType === opt.key ? "rgba(255,180,50,0.3)" : "rgba(60,100,160,0.1)"}`,
-                          borderRadius: 4,
-                          color: errorBarType === opt.key ? "#ffb432" : "rgba(160,190,230,0.4)",
-                          fontSize: 9,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                          fontFamily: "'JetBrains Mono', monospace",
-                          transition: "all 0.15s",
-                        }}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+              )}
+            </div>
             <div ref={chartContainerRef} style={{ position: "relative" }}>
               <canvas
                 ref={mainCanvasRef}
