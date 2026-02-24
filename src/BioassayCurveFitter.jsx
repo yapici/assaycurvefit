@@ -952,6 +952,29 @@ export default function BioassayCurveFitter() {
   const [fixedMin, setFixedMin] = useState("");
   const [fixedMax, setFixedMax] = useState("");
   const [fixedHill, setFixedHill] = useState("1");
+  const [showPdfModal, setShowPdfModal] = useState(false);
+  const [pdfSections, setPdfSections] = useState({
+    modelInfo: true,
+    modelParams: true,
+    plot: true,
+    rawData: true,
+    fitParams: true,
+    paramR2: true,
+    paramRMSE: true,
+    paramSSR: true,
+    paramAIC: false,
+    paramAICc: true,
+    paramBIC: true,
+    paramEC50: true,
+    paramBioEC50: true,
+    paramConverged: true,
+    paramNK: true,
+    modelComparison: true,
+    outlierResults: true,
+    backgroundInfo: true,
+    normalizationInfo: true,
+  });
+  const [pdfGenerating, setPdfGenerating] = useState(false);
 
   // Pre-populate fixed param fields from data when switching to constrained models
   useEffect(() => {
@@ -1666,6 +1689,221 @@ export default function BioassayCurveFitter() {
     a.download = `bioassay_${activeModel}_fit.${format}`;
     a.click();
   }, [activeModel, t]);
+
+  // PDF Report Generation
+  const generatePdfReport = useCallback(async () => {
+    if (!parsedData || !fitResult) return;
+    setPdfGenerating(true);
+    try {
+      const { jsPDF } = await import("jspdf");
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pw = 210, margin = 15;
+      const cw = pw - 2 * margin;
+      let y = margin;
+      const gray = [100, 100, 100];
+      const dark = [30, 30, 30];
+      const accent = [0, 150, 120];
+      const lineH = 5;
+
+      const addTitle = (text) => { doc.setFontSize(16); doc.setFont("helvetica","bold"); doc.setTextColor(...dark); doc.text(text, margin, y); y += 8; };
+      const addSection = (text) => { if (y > 260) { doc.addPage(); y = margin; } doc.setFontSize(11); doc.setFont("helvetica","bold"); doc.setTextColor(...accent); doc.text(text, margin, y); y += 2; doc.setDrawColor(...accent); doc.setLineWidth(0.3); doc.line(margin, y, margin + cw, y); y += 5; doc.setFontSize(9); doc.setFont("helvetica","normal"); doc.setTextColor(...gray); };
+      const addText = (text, opts = {}) => { const sz = opts.size || 9; const clr = opts.color || gray; doc.setFontSize(sz); doc.setFont("helvetica", opts.bold ? "bold" : "normal"); doc.setTextColor(...clr); const lines = doc.splitTextToSize(text, cw); if (y + lines.length * (sz * 0.4) > 280) { doc.addPage(); y = margin; } doc.text(lines, margin, y); y += lines.length * (sz * 0.4) + 2; doc.setFontSize(9); doc.setFont("helvetica","normal"); doc.setTextColor(...gray); };
+      const addKeyVal = (key, val) => { doc.setFontSize(9); doc.setFont("helvetica","bold"); doc.setTextColor(...dark); doc.text(key + ":", margin, y); doc.setFont("helvetica","normal"); doc.setTextColor(...gray); doc.text(String(val), margin + 35, y); y += lineH; };
+      // Sanitize text for jsPDF (replace unsupported Unicode with ASCII)
+      const sanitize = (s) => String(s).replace(/\u0394/g,"Delta ").replace(/\u2248/g,"~").replace(/--/g,"--").replace(/\u2019/g,"'").replace(/\u03B1/g,"alpha").replace(/\u00B2/g,"2").replace(/\u2265/g,">=").replace(/\u2264/g,"<=");
+
+      // Header
+      addTitle("Bioassay Curve Fitting Report");
+      doc.setFontSize(8); doc.setTextColor(...gray); doc.setFont("helvetica","normal");
+      doc.text("Generated " + new Date().toLocaleString() + "  |  assaycurvefit.com", margin, y); y += 8;
+
+      // Model info
+      if (pdfSections.modelInfo) {
+        addSection("Model");
+        addKeyVal("Model Type", activeModel);
+        if (pdfSections.modelParams) {
+          const pLabels = activeModel === "5PL" ? ["Bottom","Hill","EC50","Top","S"] : ["A (min)","B (slope)","C (EC50)","D (max)"];
+          pLabels.forEach((label, i) => {
+            const val = fitResult.params[i];
+            const suffix = fixedParams.has(i) ? "  [fixed]" : "";
+            addKeyVal(label, val.toExponential(6) + suffix);
+          });
+        }
+        if (pdfSections.paramEC50) {
+          addKeyVal("EC50", fitResult.params[activeModel === "5PL" ? 2 : 2].toExponential(6));
+        }
+        if (pdfSections.paramBioEC50 && activeModel === "5PL" && fitResult.bioEC50) {
+          addKeyVal("Biological EC50", fitResult.bioEC50.toExponential(6));
+        }
+        y += 2;
+      }
+
+      // Fit statistics (granular)
+      if (pdfSections.fitParams) {
+        addSection("Goodness of Fit");
+        if (pdfSections.paramR2) addKeyVal("R^2", fitResult.r2.toFixed(8));
+        if (pdfSections.paramRMSE) addKeyVal("RMSE", fitResult.rmse.toFixed(6));
+        if (pdfSections.paramSSR) addKeyVal("SSR", fitResult.ssr.toExponential(4));
+        if (pdfSections.paramAIC) addKeyVal("AIC", fitResult.aic.toFixed(2));
+        if (pdfSections.paramAICc) addKeyVal("AICc", fitResult.aicc.toFixed(2));
+        if (pdfSections.paramBIC) addKeyVal("BIC", fitResult.bic.toFixed(2));
+        if (pdfSections.paramConverged) addKeyVal("Converged", fitResult.converged ? "Yes" : "No");
+        if (pdfSections.paramNK) { addKeyVal("N data points", fitResult.n); addKeyVal("K parameters", fitResult.k); }
+        y += 2;
+      }
+
+      // Model comparison
+      if (pdfSections.modelComparison && comparison && comparison.fit5PL) {
+        addSection("Model Comparison (Auto Selection)");
+        const headers = ["Metric", "4PL", "5PL"];
+        const rows = [
+          ["R^2", comparison.fit4PL.r2.toFixed(6), comparison.fit5PL.r2.toFixed(6)],
+          ["AICc", comparison.fit4PL.aicc.toFixed(2), comparison.fit5PL.aicc.toFixed(2)],
+          ["BIC", comparison.fit4PL.bic.toFixed(2), comparison.fit5PL.bic.toFixed(2)],
+          ["SSR", comparison.fit4PL.ssr.toExponential(3), comparison.fit5PL.ssr.toExponential(3)],
+          ["S param", "--", comparison.fit5PL.params[4].toFixed(4)],
+        ];
+        // Table header
+        doc.setFontSize(8); doc.setFont("helvetica","bold"); doc.setTextColor(...dark);
+        doc.text(headers[0], margin, y); doc.text(headers[1], margin + 50, y); doc.text(headers[2], margin + 90, y); y += 1;
+        doc.setDrawColor(180,180,180); doc.setLineWidth(0.2); doc.line(margin, y, margin + cw, y); y += 3;
+        doc.setFont("helvetica","normal"); doc.setTextColor(...gray);
+        for (const row of rows) {
+          doc.text(row[0], margin, y); doc.text(row[1], margin + 50, y); doc.text(row[2], margin + 90, y); y += lineH;
+        }
+        y += 1;
+        addText("Selected: " + comparison.selected + " -- " + sanitize(comparison.reason), { size: 8, color: accent, bold: true }); y += 2;
+      }
+
+      // Background info
+      if (pdfSections.backgroundInfo && parsedData.bgSubtracted > 0) {
+        addSection("Background Subtraction");
+        addKeyVal("Background Mean", parsedData.bgSubtracted.toFixed(4));
+        y += 2;
+      }
+
+      // Normalization info
+      if (pdfSections.normalizationInfo && parsedData.normalized) {
+        addSection("Normalization");
+        addText("Data normalized to 0-100% using raw min=" + parsedData.normMin.toFixed(4) + ", max=" + parsedData.normMax.toFixed(4), { size: 9 });
+        y += 2;
+      }
+
+      // Plot
+      if (pdfSections.plot && mainCanvasRef.current) {
+        if (y > 160) { doc.addPage(); y = margin; }
+        addSection("Fitted Curve");
+        const canvas = mainCanvasRef.current;
+        const imgData = canvas.toDataURL("image/png");
+        const imgW = cw;
+        const imgH = (canvas.height / canvas.width) * imgW;
+        if (y + imgH > 280) { doc.addPage(); y = margin; }
+        doc.addImage(imgData, "PNG", margin, y, imgW, Math.min(imgH, 100));
+        y += Math.min(imgH, 100) + 5;
+      }
+
+      // Raw data table
+      if (pdfSections.rawData) {
+        if (y > 200) { doc.addPage(); y = margin; }
+        addSection("Raw Data");
+        const groups = groupByConcentration(parsedData.xData, parsedData.yData);
+        // Table header
+        doc.setFontSize(7); doc.setFont("helvetica","bold"); doc.setTextColor(...dark);
+        const colX = margin, colMean = margin + 22, colSD = margin + 48, colSEM = margin + 70, colCV = margin + 90, colN = margin + 112, colVals = margin + 122;
+        doc.text("Conc", colX, y); doc.text("Mean", colMean, y); doc.text("SD", colSD, y); doc.text("SEM", colSEM, y); doc.text("%CV", colCV, y); doc.text("n", colN, y); doc.text("Values", colVals, y);
+        y += 1;
+        doc.setDrawColor(180,180,180); doc.setLineWidth(0.2); doc.line(margin, y, margin + cw, y); y += 3;
+        doc.setFont("helvetica","normal"); doc.setTextColor(...gray); doc.setFontSize(6.5);
+        for (const g of groups) {
+          if (y > 275) { doc.addPage(); y = margin; }
+          const vals = g.values;
+          const n = vals.length;
+          const mean = vals.reduce((a, b) => a + b, 0) / n;
+          const sd = n > 1 ? Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1)) : 0;
+          const sem = n > 1 ? sd / Math.sqrt(n) : 0;
+          const cv = mean !== 0 ? (sd / Math.abs(mean)) * 100 : 0;
+          doc.text(g.x.toString(), colX, y);
+          doc.text(mean.toFixed(4), colMean, y);
+          doc.text(n > 1 ? sd.toFixed(4) : "--", colSD, y);
+          doc.text(n > 1 ? sem.toFixed(4) : "--", colSEM, y);
+          doc.text(n > 1 ? cv.toFixed(1) + "%" : "--", colCV, y);
+          doc.text(String(n), colN, y);
+          const valStr = vals.map(v => v.toFixed(3)).join(", ");
+          const trimmed = valStr.length > 40 ? valStr.substring(0, 37) + "..." : valStr;
+          doc.text(trimmed, colVals, y);
+          y += 3.5;
+        }
+        y += 3;
+      }
+
+      // Outlier test results
+      if (pdfSections.outlierResults && grubbsResults) {
+        if (y > 220) { doc.addPage(); y = margin; }
+        addSection("Grubbs' Outlier Test (a=" + grubbsAlpha + ")");
+        addKeyVal("Total outliers", grubbsResults.totalOutliers);
+        y += 2;
+        doc.setFontSize(7); doc.setFont("helvetica","bold"); doc.setTextColor(...dark);
+        doc.text("Conc", margin, y); doc.text("n", margin + 22, y); doc.text("Outliers", margin + 32, y); doc.text("G stat", margin + 56, y); doc.text("G crit", margin + 76, y); doc.text("Result", margin + 96, y);
+        y += 1;
+        doc.setDrawColor(180,180,180); doc.setLineWidth(0.2); doc.line(margin, y, margin + cw, y); y += 3;
+        doc.setFont("helvetica","normal"); doc.setTextColor(...gray); doc.setFontSize(7);
+        for (const gr of grubbsResults.groupResults) {
+          if (y > 275) { doc.addPage(); y = margin; }
+          const hasOutlier = gr.tested && gr.outlierCount > 0;
+          if (hasOutlier) {
+            // Highlight row background
+            doc.setFillColor(255, 235, 235);
+            doc.rect(margin - 1, y - 2.5, cw + 2, 3.5, "F");
+            doc.setTextColor(180, 40, 40);
+            doc.setFont("helvetica","bold");
+          } else {
+            doc.setTextColor(...gray);
+            doc.setFont("helvetica","normal");
+          }
+          doc.text(gr.x.toString(), margin, y);
+          doc.text(String(gr.n), margin + 22, y);
+          if (!gr.tested) {
+            doc.setTextColor(...gray); doc.setFont("helvetica","normal");
+            doc.text("n<3, skipped", margin + 32, y);
+          } else {
+            const maxG = gr.result.details ? Math.max(...gr.result.details.map(d => d.g)) : 0;
+            doc.text(String(gr.outlierCount), margin + 32, y);
+            doc.text(maxG.toFixed(4), margin + 56, y);
+            doc.text(gr.result.gCrit ? gr.result.gCrit.toFixed(4) : "--", margin + 76, y);
+            doc.text(hasOutlier ? "OUTLIER" : "Pass", margin + 96, y);
+          }
+          y += 3.5;
+          // List individual outlier values below the row
+          if (hasOutlier && gr.result.outliers) {
+            doc.setFontSize(6); doc.setTextColor(180, 40, 40); doc.setFont("helvetica","italic");
+            const olVals = gr.result.outliers.map(o => o.value.toFixed(4) + " (G=" + o.g.toFixed(3) + ")").join(", ");
+            doc.text("  Flagged: " + olVals, margin + 4, y);
+            y += 3;
+            doc.setFontSize(7);
+          }
+        }
+        // Reset
+        doc.setTextColor(...gray); doc.setFont("helvetica","normal");
+        y += 3;
+      }
+
+      // Footer on last page
+      const pages = doc.getNumberOfPages();
+      for (let i = 1; i <= pages; i++) {
+        doc.setPage(i);
+        doc.setFontSize(7); doc.setTextColor(160,160,160); doc.setFont("helvetica","normal");
+        doc.text("assaycurvefit.com  |  Page " + i + " of " + pages, pw / 2, 290, { align: "center" });
+      }
+
+      doc.save("bioassay_" + activeModel + "_report.pdf");
+    } catch (e) {
+      console.error("PDF generation failed:", e);
+      setError("PDF generation failed: " + e.message);
+    } finally {
+      setPdfGenerating(false);
+      setShowPdfModal(false);
+    }
+  }, [parsedData, fitResult, activeModel, comparison, grubbsResults, grubbsAlpha, pdfSections, fixedParams, t]);
 
   const interpolate = useCallback((targetY) => {
     if (!fitResult) return null;
@@ -2444,6 +2682,24 @@ export default function BioassayCurveFitter() {
                 >
                   Export CSV
                 </button>
+                <button
+                  onClick={() => setShowPdfModal(true)}
+                  style={{
+                    flex: 1,
+                    padding: "8px 0",
+                    background: t.btnInactive,
+                    border: `1px solid ${t.panelBorder}`,
+                    borderRadius: 4,
+                    color: t.textMuted,
+                    fontSize: 9,
+                    cursor: "pointer",
+                    fontFamily: "'JetBrains Mono', monospace",
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  PDF Report
+                </button>
               </div>
             </div>
           )}
@@ -2849,6 +3105,207 @@ export default function BioassayCurveFitter() {
           )}
         </div>
       </div>
+
+      {/* PDF Report Modal */}
+      {showPdfModal && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+          background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          zIndex: 1000,
+        }} onClick={() => setShowPdfModal(false)}>
+          <div style={{
+            background: t.panel,
+            border: `1px solid ${t.panelBorder}`,
+            borderRadius: 12,
+            padding: 24,
+            width: 380,
+            maxWidth: "90vw",
+            maxHeight: "80vh",
+            overflowY: "auto",
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: t.text, marginBottom: 16 }}>
+              PDF Report
+            </div>
+            <p style={{ fontSize: 9, color: t.textDim, marginBottom: 14, lineHeight: 1.5 }}>
+              Select sections to include in the exported report.
+            </p>
+
+            {/* Sections */}
+            {[
+              { key: "modelInfo", label: "Model & Parameters", bold: true },
+            ].map(({ key, label, bold }) => (
+              <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={pdfSections[key]}
+                  onChange={() => setPdfSections(prev => ({ ...prev, [key]: !prev[key] }))}
+                  style={{ accentColor: t.teal }}
+                />
+                <span style={{ fontSize: 10, color: t.text, fontWeight: bold ? 600 : 400 }}>{label}</span>
+              </label>
+            ))}
+            {pdfSections.modelInfo && (
+              <div style={{ marginLeft: 24, marginBottom: 8 }}>
+                {[
+                  { key: "modelParams", label: "Parameter values (A, B, C, D / Bottom, Hill, EC50, Top, S)" },
+                  { key: "paramEC50", label: "EC50" },
+                  ...(activeModel === "5PL" && fitResult && fitResult.bioEC50 ? [{ key: "paramBioEC50", label: "Biological EC50" }] : []),
+                ].map(({ key, label }) => (
+                  <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={pdfSections[key]}
+                      onChange={() => setPdfSections(prev => ({ ...prev, [key]: !prev[key] }))}
+                      style={{ accentColor: t.teal }}
+                    />
+                    <span style={{ fontSize: 9, color: t.textMuted }}>{label}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            {[
+              { key: "plot", label: "Fitted Curve Plot" },
+              { key: "rawData", label: "Raw Data Table" },
+            ].map(({ key, label }) => (
+              <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={pdfSections[key]}
+                  onChange={() => setPdfSections(prev => ({ ...prev, [key]: !prev[key] }))}
+                  style={{ accentColor: t.teal }}
+                />
+                <span style={{ fontSize: 10, color: t.text }}>{label}</span>
+              </label>
+            ))}
+
+            {/* Fit Parameters - expandable */}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={pdfSections.fitParams}
+                onChange={() => setPdfSections(prev => ({ ...prev, fitParams: !prev.fitParams }))}
+                style={{ accentColor: t.teal }}
+              />
+              <span style={{ fontSize: 10, color: t.text, fontWeight: 600 }}>Goodness of Fit Statistics</span>
+            </label>
+            {pdfSections.fitParams && (
+              <div style={{ marginLeft: 24, marginBottom: 8 }}>
+                {[
+                  { key: "paramR2", label: "R\u00B2" },
+                  { key: "paramRMSE", label: "RMSE" },
+                  { key: "paramSSR", label: "SSR" },
+                  { key: "paramAIC", label: "AIC" },
+                  { key: "paramAICc", label: "AICc" },
+                  { key: "paramBIC", label: "BIC" },
+                  { key: "paramConverged", label: "Converged / N / K" },
+                  { key: "paramNK", label: "N data points / K parameters" },
+                ].map(({ key, label }) => (
+                  <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={pdfSections[key]}
+                      onChange={() => setPdfSections(prev => ({ ...prev, [key]: !prev[key] }))}
+                      style={{ accentColor: t.teal }}
+                    />
+                    <span style={{ fontSize: 9, color: t.textMuted }}>{label}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            {/* Model comparison */}
+            {comparison && comparison.fit5PL && (
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={pdfSections.modelComparison}
+                  onChange={() => setPdfSections(prev => ({ ...prev, modelComparison: !prev.modelComparison }))}
+                  style={{ accentColor: t.teal }}
+                />
+                <span style={{ fontSize: 10, color: t.text }}>Model Comparison (4PL vs 5PL)</span>
+              </label>
+            )}
+
+            {/* Background */}
+            {parsedData && parsedData.bgSubtracted > 0 && (
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={pdfSections.backgroundInfo}
+                  onChange={() => setPdfSections(prev => ({ ...prev, backgroundInfo: !prev.backgroundInfo }))}
+                  style={{ accentColor: t.teal }}
+                />
+                <span style={{ fontSize: 10, color: t.text }}>Background Subtraction</span>
+              </label>
+            )}
+
+            {/* Normalization */}
+            {parsedData && parsedData.normalized && (
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={pdfSections.normalizationInfo}
+                  onChange={() => setPdfSections(prev => ({ ...prev, normalizationInfo: !prev.normalizationInfo }))}
+                  style={{ accentColor: t.teal }}
+                />
+                <span style={{ fontSize: 10, color: t.text }}>Normalization Info</span>
+              </label>
+            )}
+
+            {/* Outlier results */}
+            {grubbsResults && (
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={pdfSections.outlierResults}
+                  onChange={() => setPdfSections(prev => ({ ...prev, outlierResults: !prev.outlierResults }))}
+                  style={{ accentColor: t.teal }}
+                />
+                <span style={{ fontSize: 10, color: t.text }}>Grubbs' Outlier Test Results</span>
+              </label>
+            )}
+
+            {/* Actions */}
+            <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
+              <button
+                onClick={() => setShowPdfModal(false)}
+                style={{
+                  flex: 1, padding: "10px 0",
+                  background: t.btnInactive,
+                  border: `1px solid ${t.panelBorder}`,
+                  borderRadius: 6,
+                  color: t.textMuted,
+                  fontSize: 10, fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "'JetBrains Mono', monospace",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={generatePdfReport}
+                disabled={pdfGenerating}
+                style={{
+                  flex: 2, padding: "10px 0",
+                  background: pdfGenerating ? "rgba(0,230,180,0.05)" : "rgba(0,230,180,0.12)",
+                  border: `1px solid rgba(0,230,180,0.3)`,
+                  borderRadius: 6,
+                  color: pdfGenerating ? t.textDim : "#00e6b4",
+                  fontSize: 10, fontWeight: 700,
+                  cursor: pdfGenerating ? "wait" : "pointer",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  textTransform: "uppercase",
+                  letterSpacing: 0.5,
+                }}
+              >
+                {pdfGenerating ? "Generating..." : "Generate PDF"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
