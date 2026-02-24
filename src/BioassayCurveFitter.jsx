@@ -1715,7 +1715,7 @@ export default function BioassayCurveFitter() {
       // Header
       addTitle("Bioassay Curve Fitting Report");
       doc.setFontSize(8); doc.setTextColor(...gray); doc.setFont("helvetica","normal");
-      doc.text("Generated " + new Date().toLocaleString() + "  |  assaycurvefit.com", margin, y); y += 8;
+      doc.text("Generated " + new Date().toLocaleString() + "  |  assaycurvefit.com  |  " + (typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev"), margin, y); y += 8;
 
       // Model info
       if (pdfSections.modelInfo) {
@@ -1966,8 +1966,14 @@ export default function BioassayCurveFitter() {
             WebkitBackgroundClip: "text",
             WebkitTextFillColor: "transparent",
             letterSpacing: "-0.5px",
+            display: "flex",
+            alignItems: "baseline",
+            gap: 8,
           }}>
             Bioassay Curve Fitter
+            <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.5, WebkitTextFillColor: t.textDim, background: "none" }}>
+              {typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev"}
+            </span>
           </h1>
           <p style={{ fontSize: 12, color: t.textMuted, marginTop: 4 }}>
             4-Parameter & 5-Parameter Logistic Regression | Levenberg-Marquardt Optimization
