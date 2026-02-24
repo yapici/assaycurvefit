@@ -724,18 +724,9 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
         ctx.beginPath(); ctx.moveTo(cx - capW, cyLo); ctx.lineTo(cx + capW, cyLo); ctx.stroke();
       }
 
-      // Mean point glow
-      const grad = ctx.createRadialGradient(cx, cyMean, 0, cx, cyMean, 14);
-      grad.addColorStop(0, (t.tealGlow || "rgba(0,230,180,") + "0.35)");
-      grad.addColorStop(1, (t.tealGlow || "rgba(0,230,180,") + "0)");
-      ctx.fillStyle = grad;
-      ctx.beginPath(); ctx.arc(cx, cyMean, 14, 0, Math.PI * 2); ctx.fill();
-
       // Mean point
       ctx.fillStyle = t.teal || "#00e6b4";
-      ctx.strokeStyle = (t.tealGlow || "rgba(0,230,180,") + "0.6)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(cx, cyMean, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cyMean, 5, 0, Math.PI * 2); ctx.fill();
     });
   } else {
     // Individual points view
@@ -750,25 +741,16 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
         // Dimmed with strikethrough
         ctx.globalAlpha = 0.3;
         ctx.fillStyle = t.red || "#ff506a";
-        ctx.strokeStyle = (t.redGlow || "rgba(255,80,106,") + "0.4)";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
         // Strikethrough line
         ctx.strokeStyle = (t.redGlow || "rgba(255,80,106,") + "0.5)";
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(cx - 7, cy); ctx.lineTo(cx + 7, cy); ctx.stroke();
         ctx.globalAlpha = 1;
       } else if (isOutlier) {
-        // Outlier flagged (red glow + X)
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 12);
-        grad.addColorStop(0, (t.redGlow || "rgba(255,80,100,") + "0.3)");
-        grad.addColorStop(1, (t.redGlow || "rgba(255,80,100,") + "0)");
-        ctx.fillStyle = grad;
-        ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI * 2); ctx.fill();
+        // Outlier flagged (red + X)
         ctx.fillStyle = t.red || "#ff506a";
-        ctx.strokeStyle = (t.redGlow || "rgba(255,80,106,") + "0.6)";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
         const s = 6;
         ctx.strokeStyle = (t.redGlow || "rgba(255,80,106,") + "0.7)";
         ctx.lineWidth = 1.5;
@@ -776,15 +758,8 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
         ctx.beginPath(); ctx.moveTo(cx + s, cy - s); ctx.lineTo(cx - s, cy + s); ctx.stroke();
       } else {
         // Normal point
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 12);
-        grad.addColorStop(0, (t.tealGlow || "rgba(0,230,180,") + "0.3)");
-        grad.addColorStop(1, (t.tealGlow || "rgba(0,230,180,") + "0)");
-        ctx.fillStyle = grad;
-        ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = t.teal || "#00e6b4";
-        ctx.strokeStyle = (t.tealGlow || "rgba(0,230,180,") + "0.5)";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
       }
     });
   }
