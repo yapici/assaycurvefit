@@ -1,15 +1,18 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 
 // ── Multi-Compound CSV Parser ─────────────────────────────────────
-// Handles GraphPad Prism-style format:
-//   Row 0: compound names (duplicated headers = replicates)
-//   Col 0: concentrations (Log10 M or raw)
-//   Adjacent duplicate headers = replicate columns for same compound
+// Handles two formats:
+//   Log10 format: first column header contains "log" (e.g. "Log(10) Concentration (M)")
+//                 values like -5.00, -6.50 → stored as-is, treated as log10
+//   Molar format: any other header (e.g. "Concentration (M)")
+//                 values like 1.00E-5 → stored as-is (linear molar)
+// Adjacent duplicate column headers = replicate columns for the same compound.
 function parsePrismCSV(text) {
   const lines = text.replace(/^\uFEFF/, "").trim().split(/\r?\n/);
   if (lines.length < 2) throw new Error("File has fewer than 2 rows.");
   const headers = lines[0].split(",").map(h => h.trim());
-  // Group columns by compound name preserving order
+  const isLog10 = /log/i.test(headers[0]);
+
   const compoundMap = new Map();
   const compoundOrder = [];
   for (let i = 1; i < headers.length; i++) {
@@ -18,11 +21,14 @@ function parsePrismCSV(text) {
     compoundMap.get(name).push(i);
   }
   if (compoundOrder.length === 0) throw new Error("No compound columns found.");
+
   const rows = lines.slice(1).map(l => l.split(",").map(v => v.trim()));
   const compounds = compoundOrder.map(name => {
     const colIndices = compoundMap.get(name);
     const points = rows.map(row => {
-      const conc = parseFloat(row[0]);
+      const raw = parseFloat(row[0]);
+      // Normalise to log10 for internal storage
+      const conc = isLog10 ? raw : Math.log10(raw);
       const reps = colIndices.map(ci => parseFloat(row[ci])).filter(v => !isNaN(v));
       const avg = reps.length ? reps.reduce((a, b) => a + b, 0) / reps.length : NaN;
       return { conc, avg, reps };
@@ -42,6 +48,25 @@ function compoundToCSV(compound) {
     return `${Math.pow(10, p.conc)},${repVals}`;
   });
   return [header, ...rows].join("\n");
+}
+
+// Download a blank multi-compound CSV template (Molarity concentrations, not log)
+// Mirrors the structure of the test CSV: 3 compounds × 2 replicates, 8 concentrations
+function downloadMultiTemplate() {
+  const logConcs = [-5.00, -5.50, -6.00, -6.50, -7.00, -7.49, -8.00, -8.52];
+  const header = "Concentration (M),Compound A,Compound A,Compound B,Compound B,Compound C,Compound C";
+  const rows = logConcs.map(lc => {
+    const molar = Math.pow(10, lc);
+    // Write in scientific notation e.g. 1.00E-5 for clarity
+    const formatted = molar.toExponential(2).toUpperCase();
+    return `${formatted},,,,,,`;
+  });
+  const csv = [header, ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "multi_compound_template.csv"; a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ── Numerical Engine ──────────────────────────────────────────────
@@ -2187,6 +2212,24 @@ export default function BioassayCurveFitter() {
                 }}
               >
                 {multiData ? `Multi CSV ✓` : "Multi CSV"}
+              </button>
+              {/* Template download button */}
+              <button
+                onClick={downloadMultiTemplate}
+                title="Download a blank multi-compound CSV template"
+                style={{
+                  padding: "2px 8px",
+                  background: t.btnInactive,
+                  border: `1px solid ${t.inputBorder}`,
+                  borderRadius: 4,
+                  color: t.textDim,
+                  fontSize: 9,
+                  cursor: "pointer",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Template
               </button>
               <input
                 ref={multiCsvRef}
