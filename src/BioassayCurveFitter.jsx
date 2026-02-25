@@ -1,5 +1,49 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 
+// ── Multi-Compound CSV Parser ─────────────────────────────────────
+// Handles GraphPad Prism-style format:
+//   Row 0: compound names (duplicated headers = replicates)
+//   Col 0: concentrations (Log10 M or raw)
+//   Adjacent duplicate headers = replicate columns for same compound
+function parsePrismCSV(text) {
+  const lines = text.replace(/^\uFEFF/, "").trim().split(/\r?\n/);
+  if (lines.length < 2) throw new Error("File has fewer than 2 rows.");
+  const headers = lines[0].split(",").map(h => h.trim());
+  // Group columns by compound name preserving order
+  const compoundMap = new Map();
+  const compoundOrder = [];
+  for (let i = 1; i < headers.length; i++) {
+    const name = headers[i] || `Compound ${i}`;
+    if (!compoundMap.has(name)) { compoundMap.set(name, []); compoundOrder.push(name); }
+    compoundMap.get(name).push(i);
+  }
+  if (compoundOrder.length === 0) throw new Error("No compound columns found.");
+  const rows = lines.slice(1).map(l => l.split(",").map(v => v.trim()));
+  const compounds = compoundOrder.map(name => {
+    const colIndices = compoundMap.get(name);
+    const points = rows.map(row => {
+      const conc = parseFloat(row[0]);
+      const reps = colIndices.map(ci => parseFloat(row[ci])).filter(v => !isNaN(v));
+      const avg = reps.length ? reps.reduce((a, b) => a + b, 0) / reps.length : NaN;
+      return { conc, avg, reps };
+    }).filter(p => !isNaN(p.conc) && !isNaN(p.avg));
+    return { name, nReplicates: colIndices.length, points };
+  });
+  return compounds;
+}
+
+// Convert a parsed compound back to CSV text for the existing textarea/parser
+function compoundToCSV(compound) {
+  const repCount = compound.nReplicates;
+  const repHeaders = Array.from({ length: repCount }, (_, i) => `Rep${i + 1}`).join(",");
+  const header = `Concentration,${repHeaders}`;
+  const rows = compound.points.map(p => {
+    const repVals = p.reps.map(v => v.toString()).join(",");
+    return `${Math.pow(10, p.conc)},${repVals}`;
+  });
+  return [header, ...rows].join("\n");
+}
+
 // ── Numerical Engine ──────────────────────────────────────────────
 // 4PL: y = D + (A - D) / (1 + (x/C)^B)
 // 5PL: y = Bottom + (Top - Bottom) / (1 + (EC50/x)^Hill)^S
@@ -1251,11 +1295,11 @@ export default function BioassayCurveFitter() {
     return { mean, sd, n: values.length, values };
   }, []);
 
-  const runFit = useCallback(() => {
+  const runFit = useCallback((overrideData) => {
     try {
       setError(null);
       setComparison(null);
-      const { xData, yData: yRaw } = parseData(rawData);
+      const { xData, yData: yRaw } = parseData(overrideData ?? rawData);
       if (xData.length < 4) { setError("Need at least 4 data points"); return; }
 
       // Background subtraction
@@ -1932,6 +1976,64 @@ export default function BioassayCurveFitter() {
   const [interpY, setInterpY] = useState("");
   const [interpResult, setInterpResult] = useState(null);
 
+  // ── Multi-Compound CSV state ──────────────────────────────────
+  const [multiData, setMultiData] = useState(null);
+  const [multiIndex, setMultiIndex] = useState(0);
+  const [multiCsvError, setMultiCsvError] = useState(null);
+  const multiCsvRef = useRef(null);
+
+  // Helper: reset all fit-related state and load a compound's data into the textarea
+  const loadCompound = useCallback((compound) => {
+    const csv = compoundToCSV(compound);
+    setRawData(csv);
+    setParsedData(null);
+    setFitResult(null);
+    setComparison(null);
+    setError(null);
+    setGrubbsResults(null);
+    setShowOutliers(false);
+    setSelectedGrubbsGroup(null);
+    setExcludedIndices(new Set());
+    setBgStats(null);
+    // Auto-fit immediately using the CSV string directly (state hasn't updated yet)
+    runFit(csv);
+  }, [runFit]);
+
+  // When multiIndex changes, swap the textarea content
+  useEffect(() => {
+    if (!multiData) return;
+    loadCompound(multiData[multiIndex]);
+  }, [multiIndex, multiData]); // intentionally not including loadCompound to avoid stale closure loop
+
+  const handleMultiCsv = useCallback((file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const compounds = parsePrismCSV(e.target.result);
+        setMultiData(compounds);
+        setMultiIndex(0);
+        setMultiCsvError(null);
+        // Immediately load first compound
+        loadCompound(compounds[0]);
+      } catch (err) {
+        setMultiCsvError(err.message);
+        setMultiData(null);
+      }
+    };
+    reader.readAsText(file);
+  }, [loadCompound]);
+
+  useEffect(() => {
+    if (!multiData) return;
+    const handler = (e) => {
+      if (e.key === "ArrowLeft") setMultiIndex(i => Math.max(0, i - 1));
+      if (e.key === "ArrowRight") setMultiIndex(i => Math.min(multiData.length - 1, i + 1));
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [multiData]);
+
   return (
     <div style={{
       minHeight: "100vh",
@@ -2048,6 +2150,32 @@ export default function BioassayCurveFitter() {
                   <option key={name} value={name}>{name}</option>
                 ))}
               </select>
+              {/* Multi-Compound CSV upload button */}
+              <button
+                onClick={() => multiCsvRef.current && multiCsvRef.current.click()}
+                title="Load a Prism-style multi-compound CSV (duplicate headers = replicates)"
+                style={{
+                  padding: "2px 8px",
+                  background: multiData ? "rgba(0,230,180,0.12)" : t.btnInactive,
+                  border: `1px solid ${multiData ? "rgba(0,230,180,0.3)" : t.inputBorder}`,
+                  borderRadius: 4,
+                  color: multiData ? (t.teal || "#00e6b4") : t.textDim,
+                  fontSize: 9,
+                  cursor: "pointer",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  whiteSpace: "nowrap",
+                  fontWeight: multiData ? 700 : 400,
+                }}
+              >
+                {multiData ? `Multi CSV ✓` : "Multi CSV"}
+              </button>
+              <input
+                ref={multiCsvRef}
+                type="file"
+                accept=".csv"
+                style={{ display: "none" }}
+                onChange={e => { handleMultiCsv(e.target.files[0]); e.target.value = ""; }}
+              />
             </div>
             <textarea
               value={rawData}
@@ -2088,6 +2216,19 @@ export default function BioassayCurveFitter() {
               </p>
             )}
           </div>
+
+          {multiCsvError && (
+            <div style={{
+              padding: "10px 12px",
+              background: "rgba(255,80,80,0.08)",
+              border: "1px solid rgba(255,80,80,0.25)",
+              borderRadius: 6,
+              color: t.red,
+              fontSize: 10,
+            }}>
+              Multi CSV: {multiCsvError}
+            </div>
+          )}
 
           {/* Background Subtraction */}
           <div style={{
@@ -2713,6 +2854,116 @@ export default function BioassayCurveFitter() {
 
         {/* Right Panel - Charts */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16, order: isMobile ? 1 : 2 }}>
+          {/* Multi-Compound nav bar — shown above chart when a multi-compound CSV is loaded */}
+          {multiData && (
+            <div style={{
+              background: t.panel,
+              border: `1px solid ${t.tealBorder || "rgba(0,230,180,0.25)"}`,
+              borderRadius: 10,
+              padding: "12px 16px",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              flexWrap: "wrap",
+            }}>
+              {/* Compound label */}
+              <span style={{ fontSize: 11, fontWeight: 700, color: t.teal, textTransform: "uppercase", letterSpacing: 1, whiteSpace: "nowrap" }}>
+                Multi CSV
+              </span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: t.text, whiteSpace: "nowrap" }}>
+                {multiData[multiIndex].name}
+              </span>
+              <span style={{ fontSize: 10, color: t.textDim, whiteSpace: "nowrap" }}>
+                n={multiData[multiIndex].nReplicates} · {multiData[multiIndex].points.length} conc
+              </span>
+
+              {/* Spacer */}
+              <div style={{ flex: 1, minWidth: 8 }} />
+
+              {/* Prev button */}
+              <button
+                onClick={() => setMultiIndex(i => Math.max(0, i - 1))}
+                disabled={multiIndex === 0}
+                style={{
+                  width: 28, height: 28, flexShrink: 0,
+                  background: t.btnInactive,
+                  border: `1px solid ${t.panelBorder}`,
+                  borderRadius: 5,
+                  color: multiIndex === 0 ? t.textFaint : t.textMuted,
+                  fontSize: 14,
+                  cursor: multiIndex === 0 ? "not-allowed" : "pointer",
+                  fontFamily: "monospace",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  lineHeight: 1,
+                }}
+              >←</button>
+
+              {/* Dropdown */}
+              <select
+                value={multiIndex}
+                onChange={e => setMultiIndex(Number(e.target.value))}
+                style={{
+                  padding: "4px 8px",
+                  background: t.input,
+                  border: `1px solid ${t.inputBorder}`,
+                  borderRadius: 5,
+                  color: t.text,
+                  fontSize: 11,
+                  fontFamily: "'JetBrains Mono', monospace",
+                  outline: "none",
+                  cursor: "pointer",
+                  maxWidth: 160,
+                }}
+              >
+                {multiData.map((c, i) => (
+                  <option key={i} value={i}>{c.name}</option>
+                ))}
+              </select>
+
+              {/* Counter */}
+              <span style={{ fontSize: 10, color: t.textDim, whiteSpace: "nowrap", minWidth: 36 }}>
+                {multiIndex + 1}/{multiData.length}
+              </span>
+
+              {/* Next button */}
+              <button
+                onClick={() => setMultiIndex(i => Math.min(multiData.length - 1, i + 1))}
+                disabled={multiIndex === multiData.length - 1}
+                style={{
+                  width: 28, height: 28, flexShrink: 0,
+                  background: t.btnInactive,
+                  border: `1px solid ${t.panelBorder}`,
+                  borderRadius: 5,
+                  color: multiIndex === multiData.length - 1 ? t.textFaint : t.textMuted,
+                  fontSize: 14,
+                  cursor: multiIndex === multiData.length - 1 ? "not-allowed" : "pointer",
+                  fontFamily: "monospace",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  lineHeight: 1,
+                }}
+              >→</button>
+
+              {/* Close */}
+              <button
+                onClick={() => { setMultiData(null); setMultiCsvError(null); }}
+                style={{
+                  padding: "4px 10px",
+                  background: t.btnInactive,
+                  border: `1px solid ${t.panelBorder}`,
+                  borderRadius: 5,
+                  color: t.textMuted,
+                  fontSize: 9,
+                  cursor: "pointer",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                ✕ Close
+              </button>
+            </div>
+          )}
+
+          {/* Chart panel */}
           <div style={{
             background: t.panel,
             border: `1px solid ${t.panelBorder}`,
