@@ -1295,11 +1295,11 @@ export default function BioassayCurveFitter() {
     return { mean, sd, n: values.length, values };
   }, []);
 
-  const runFit = useCallback((overrideData) => {
+  const runFit = useCallback(() => {
     try {
       setError(null);
       setComparison(null);
-      const { xData, yData: yRaw } = parseData(overrideData ?? rawData);
+      const { xData, yData: yRaw } = parseData(rawData);
       if (xData.length < 4) { setError("Need at least 4 data points"); return; }
 
       // Background subtraction
@@ -1982,7 +1982,7 @@ export default function BioassayCurveFitter() {
   const [multiCsvError, setMultiCsvError] = useState(null);
   const multiCsvRef = useRef(null);
 
-  // Helper: reset all fit-related state and load a compound's data into the textarea
+  // Helper: reset all fit-related state, load a compound's data, and auto-fit
   const loadCompound = useCallback((compound) => {
     const csv = compoundToCSV(compound);
     setRawData(csv);
@@ -1995,9 +1995,26 @@ export default function BioassayCurveFitter() {
     setSelectedGrubbsGroup(null);
     setExcludedIndices(new Set());
     setBgStats(null);
-    // Auto-fit immediately using the CSV string directly (state hasn't updated yet)
-    runFit(csv);
-  }, [runFit]);
+    // Run fit inline with the csv string directly — avoids stale rawData state
+    try {
+      const { xData, yData } = parseData(csv);
+      if (xData.length < 4) return;
+      const fit4 = fitModel(xData, yData, model4PL, false);
+      const fit5 = xData.length >= 5 ? fitModel(xData, yData, model5PL, true) : null;
+      setParsedData({ xData, yData, yRaw: yData, bgSubtracted: 0, normMin: 0, normMax: 1, normalized: false });
+      if (!fit4 && !fit5) return;
+      if (!fit5 || Math.abs(fit5.params[4] - 1) < 0.05) {
+        setActiveModel("4PL"); setFitResult(fit4);
+        setComparison({ fit4PL: fit4, fit5PL: fit5 || null, selected: "4PL", reason: "Auto" });
+      } else {
+        const deltaAICc = (fit4?.aicc ?? Infinity) - fit5.aicc;
+        const selected = (deltaAICc > 2 && fit4.bic - fit5.bic > 0) ? "5PL" : "4PL";
+        setActiveModel(selected);
+        setFitResult(selected === "5PL" ? fit5 : fit4);
+        setComparison({ fit4PL: fit4, fit5PL: fit5, selected, reason: "Auto" });
+      }
+    } catch { /* silently skip on malformed data */ }
+  }, [parseData]);
 
   // When multiIndex changes, swap the textarea content
   useEffect(() => {
@@ -2113,8 +2130,9 @@ export default function BioassayCurveFitter() {
             borderRadius: 10,
             padding: 16,
           }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>Data Input</span>
+            <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+              <span style={{ whiteSpace: "nowrap" }}>Data Input</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <select
                 onChange={(e) => {
                   if (e.target.value && EXAMPLE_DATASETS[e.target.value]) {
@@ -2134,7 +2152,7 @@ export default function BioassayCurveFitter() {
                   e.target.value = "";
                 }}
                 style={{
-                  padding: "2px 6px",
+                  padding: "2px 4px",
                   background: t.input,
                   border: `1px solid ${t.inputBorder}`,
                   borderRadius: 4,
@@ -2143,9 +2161,10 @@ export default function BioassayCurveFitter() {
                   fontFamily: "'JetBrains Mono', monospace",
                   outline: "none",
                   cursor: "pointer",
+                  width: 82,
                 }}
               >
-                <option value="">Examples...</option>
+                <option value="">Examples…</option>
                 {Object.keys(EXAMPLE_DATASETS).map(name => (
                   <option key={name} value={name}>{name}</option>
                 ))}
@@ -2176,6 +2195,7 @@ export default function BioassayCurveFitter() {
                 style={{ display: "none" }}
                 onChange={e => { handleMultiCsv(e.target.files[0]); e.target.value = ""; }}
               />
+              </div>
             </div>
             <textarea
               value={rawData}
