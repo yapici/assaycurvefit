@@ -69,6 +69,12 @@ function downloadMultiTemplate() {
   URL.revokeObjectURL(url);
 }
 
+// ── Overlay color palette (one per compound, cycles if >8) ────────
+const OVERLAY_COLORS = [
+  "#3b9eff", "#00e6b4", "#ffb432", "#a855f7",
+  "#ff506a", "#22c55e", "#ec4899", "#eab308",
+];
+
 // ── Numerical Engine ──────────────────────────────────────────────
 // 4PL: y = D + (A - D) / (1 + (x/C)^B)
 // 5PL: y = Bottom + (Top - Bottom) / (1 + (EC50/x)^Hill)^S
@@ -581,9 +587,37 @@ function runGrubbsAllGroups(xData, yData, alpha = 0.05) {
   return { outlierIndices, groupResults, totalOutliers: outlierIndices.size };
 }
 
+// ── Point shape helper ────────────────────────────────────────────
+// Draws a filled shape at (cx, cy) with radius r. ctx.fillStyle must be set before calling.
+function drawPoint(ctx, cx, cy, r, shape) {
+  ctx.beginPath();
+  switch (shape) {
+    case "square":
+      ctx.rect(cx - r, cy - r, r * 2, r * 2);
+      break;
+    case "triangle":
+      ctx.moveTo(cx, cy - r * 1.3);
+      ctx.lineTo(cx + r * 1.1, cy + r * 0.85);
+      ctx.lineTo(cx - r * 1.1, cy + r * 0.85);
+      ctx.closePath();
+      break;
+    case "diamond":
+      ctx.moveTo(cx, cy - r * 1.3);
+      ctx.lineTo(cx + r, cy);
+      ctx.lineTo(cx, cy + r * 1.3);
+      ctx.lineTo(cx - r, cy);
+      ctx.closePath();
+      break;
+    default: // circle
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  }
+  ctx.fill();
+}
+
 // ── Chart drawing ─────────────────────────────────────────────────
 function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, theme = {}) {
-  const { pointView = "individual", errorBarType = "sd", outlierIndices = null, excludedIndices: exclSet = null } = options;
+  const { pointView = "individual", errorBarType = "sd", outlierIndices = null, excludedIndices: exclSet = null,
+          compoundStyle = null, axisOverride = null } = options;
   const t = theme;
   const grouped = groupByConcentration(xData, yData);
   const ctx = canvas.getContext("2d");
@@ -620,12 +654,20 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
     }
   }
   const allYValues = [...allY, ...curveY];
-  
+
   let yMin = Math.min(...allYValues);
   let yMax = Math.max(...allYValues);
   const yPad = (yMax - yMin) * 0.1 || 1;
   yMin -= yPad;
   yMax += yPad;
+
+  // Apply manual axis overrides (empty string / NaN = auto)
+  if (axisOverride) {
+    if (axisOverride.xMin != null && !isNaN(axisOverride.xMin)) xMin = axisOverride.xMin;
+    if (axisOverride.xMax != null && !isNaN(axisOverride.xMax)) xMax = axisOverride.xMax;
+    if (axisOverride.yMin != null && !isNaN(axisOverride.yMin)) yMin = axisOverride.yMin;
+    if (axisOverride.yMax != null && !isNaN(axisOverride.yMax)) yMax = axisOverride.yMax;
+  }
 
   const toCanvasX = (lx) => pad.left + ((lx - xMin) / (xMax - xMin)) * plotW;
   const toCanvasY = (y) => pad.top + ((yMax - y) / (yMax - yMin)) * plotH;
@@ -793,19 +835,23 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
         ctx.beginPath(); ctx.moveTo(cx - capW, cyLo); ctx.lineTo(cx + capW, cyLo); ctx.stroke();
       }
 
-      // Mean point
-      ctx.fillStyle = t.teal || "#00e6b4";
-      ctx.beginPath(); ctx.arc(cx, cyMean, 5, 0, Math.PI * 2); ctx.fill();
+      // Mean point — use compound style if available
+      const ptColorEB = compoundStyle?.color ?? (t.teal || "#00e6b4");
+      const ptShapeEB = compoundStyle?.shape ?? "circle";
+      ctx.fillStyle = ptColorEB;
+      drawPoint(ctx, cx, cyMean, 5, ptShapeEB);
     });
   } else {
     // Individual points view
+    const ptColor = compoundStyle?.color ?? (t.teal || "#00e6b4");
+    const ptShape = compoundStyle?.shape ?? "circle";
     xData.forEach((x, i) => {
       if (x <= 0) return;
       const lx = Math.log10(x);
       const cx = toCanvasX(lx), cy = toCanvasY(yData[i]);
       const isExcluded = exclSet && exclSet.has(i);
       const isOutlier = !isExcluded && outlierIndices && outlierIndices.has(i);
-      
+
       if (isExcluded) {
         // Dimmed with strikethrough
         ctx.globalAlpha = 0.3;
@@ -826,15 +872,195 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
         ctx.beginPath(); ctx.moveTo(cx - s, cy - s); ctx.lineTo(cx + s, cy + s); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(cx + s, cy - s); ctx.lineTo(cx - s, cy + s); ctx.stroke();
       } else {
-        // Normal point
-        ctx.fillStyle = t.teal || "#00e6b4";
-        ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+        // Normal point — use compound style
+        ctx.fillStyle = ptColor;
+        drawPoint(ctx, cx, cy, 4, ptShape);
       }
     });
   }
 
   // Attach error bar groups to meta for tooltip
   canvas._chartMeta.errorBarGroups = errorBarGroups;
+}
+
+// ── Overlay chart (all compounds on one canvas) ───────────────────
+// overlayCompounds: [{ name, xData, yData, fitResult, modelType, color }, ...]
+function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
+  const { pointView = "individual", axisOverride = null } = options;
+  const t = theme;
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+
+  const pad = { top: 30, right: 30, bottom: 55, left: 70 };
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+
+  // Compute axis ranges across all compounds
+  const allLogX = overlayCompounds.flatMap(c => c.xData.filter(x => x > 0).map(x => Math.log10(x)));
+  const allY = overlayCompounds.flatMap(c => c.yData);
+
+  let xMin, xMax;
+  if (allLogX.length > 0) {
+    xMin = Math.floor(Math.min(...allLogX)) - 0.5;
+    xMax = Math.ceil(Math.max(...allLogX)) + 0.5;
+  } else {
+    xMin = -2; xMax = 4;
+  }
+
+  // Include curve Y values in range
+  const curveY = overlayCompounds.flatMap(c => {
+    if (!c.fitResult) return [];
+    const fn = getModelFn(c.modelType);
+    const pts = [];
+    for (let i = 0; i <= 100; i++) {
+      const lx = xMin + (xMax - xMin) * (i / 100);
+      pts.push(fn(Math.pow(10, lx), c.fitResult.params));
+    }
+    return pts;
+  });
+
+  let yMin = Math.min(...allY, ...curveY);
+  let yMax = Math.max(...allY, ...curveY);
+  const yPad = (yMax - yMin) * 0.1 || 1;
+  yMin -= yPad;
+  yMax += yPad;
+
+  if (axisOverride) {
+    if (axisOverride.xMin != null && !isNaN(axisOverride.xMin)) xMin = axisOverride.xMin;
+    if (axisOverride.xMax != null && !isNaN(axisOverride.xMax)) xMax = axisOverride.xMax;
+    if (axisOverride.yMin != null && !isNaN(axisOverride.yMin)) yMin = axisOverride.yMin;
+    if (axisOverride.yMax != null && !isNaN(axisOverride.yMax)) yMax = axisOverride.yMax;
+  }
+
+  const toCanvasX = (lx) => pad.left + ((lx - xMin) / (xMax - xMin)) * plotW;
+  const toCanvasY = (y) => pad.top + ((yMax - y) / (yMax - yMin)) * plotH;
+
+  canvas._chartMeta = { pad, plotW, plotH, xMin, xMax, yMin, yMax, W, H, toCanvasX, toCanvasY, errorBarGroups: [], theme: t, isOverlay: true, overlayCompounds };
+
+  // Background
+  ctx.fillStyle = t.canvas || "#0a0f1a";
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = t.grid || "rgba(100,140,180,0.08)";
+  ctx.lineWidth = 1;
+  for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
+    const cx = toCanvasX(lx);
+    ctx.beginPath(); ctx.moveTo(cx, pad.top); ctx.lineTo(cx, pad.top + plotH); ctx.stroke();
+  }
+  const yTicks = 6;
+  for (let i = 0; i <= yTicks; i++) {
+    const y = yMin + (yMax - yMin) * (i / yTicks);
+    const cy = toCanvasY(y);
+    ctx.beginPath(); ctx.moveTo(pad.left, cy); ctx.lineTo(pad.left + plotW, cy); ctx.stroke();
+  }
+
+  // Axes
+  ctx.strokeStyle = t.axis || "rgba(140,170,210,0.3)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, pad.top + plotH);
+  ctx.lineTo(pad.left + plotW, pad.top + plotH);
+  ctx.stroke();
+
+  // Axis labels
+  ctx.fillStyle = t.axisLabel || "rgba(160,190,230,0.6)";
+  ctx.font = "11px 'JetBrains Mono', monospace";
+  ctx.textAlign = "center";
+  for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
+    ctx.fillText(`10^${lx}`, toCanvasX(lx), pad.top + plotH + 18);
+  }
+  ctx.textAlign = "right";
+  for (let i = 0; i <= yTicks; i++) {
+    const y = yMin + (yMax - yMin) * (i / yTicks);
+    ctx.fillText(y.toFixed(2), pad.left - 8, toCanvasY(y) + 4);
+  }
+
+  // Axis titles
+  ctx.fillStyle = t.label || "rgba(180,210,240,0.7)";
+  ctx.font = "12px 'JetBrains Mono', monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("Concentration (log scale)", pad.left + plotW / 2, H - 8);
+  ctx.save();
+  ctx.translate(16, pad.top + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText("Response", 0, 0);
+  ctx.restore();
+
+  // Per-compound rendering
+  overlayCompounds.forEach((compound) => {
+    const { xData: cX, yData: cY, fitResult: cFit, modelType: cModel, color } = compound;
+
+    // Parse color to rgba for alpha variants
+    const hexToRgb = (hex) => {
+      const r = parseInt(hex.slice(1, 3), 16);
+      const g = parseInt(hex.slice(3, 5), 16);
+      const b = parseInt(hex.slice(5, 7), 16);
+      return `${r},${g},${b}`;
+    };
+    const rgb = hexToRgb(color);
+
+    // Fitted curve
+    if (cFit) {
+      const modelFn = getModelFn(cModel);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.0;
+      ctx.shadowColor = `rgba(${rgb},0.35)`;
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      for (let i = 0; i <= 200; i++) {
+        const lx = xMin + (xMax - xMin) * (i / 200);
+        const x = Math.pow(10, lx);
+        const y = modelFn(x, cFit.params);
+        const cx = toCanvasX(lx), cy = toCanvasY(y);
+        if (i === 0) ctx.moveTo(cx, cy); else ctx.lineTo(cx, cy);
+      }
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+    }
+
+    // Data points
+    if (pointView === "errorbars") {
+      const grouped = groupByConcentration(cX, cY);
+      grouped.forEach(g => {
+        if (g.x <= 0) return;
+        const n = g.n;
+        const mean = g.values.reduce((a, b) => a + b, 0) / n;
+        const variance = n > 1 ? g.values.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1) : 0;
+        const sd = Math.sqrt(variance);
+        const lx = Math.log10(g.x);
+        const pcx = toCanvasX(lx);
+        const cyMean = toCanvasY(mean);
+        const cyHi = toCanvasY(mean + sd);
+        const cyLo = toCanvasY(mean - sd);
+        if (n > 1) {
+          ctx.strokeStyle = `rgba(${rgb},0.55)`;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.moveTo(pcx, cyHi); ctx.lineTo(pcx, cyLo); ctx.stroke();
+          const capW = 4;
+          ctx.beginPath(); ctx.moveTo(pcx - capW, cyHi); ctx.lineTo(pcx + capW, cyHi); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(pcx - capW, cyLo); ctx.lineTo(pcx + capW, cyLo); ctx.stroke();
+        }
+        ctx.fillStyle = color;
+        drawPoint(ctx, pcx, cyMean, 4, compound.shape ?? "circle");
+      });
+    } else {
+      cX.forEach((x, i) => {
+        if (x <= 0) return;
+        const lx = Math.log10(x);
+        const pcx = toCanvasX(lx), pcy = toCanvasY(cY[i]);
+        ctx.fillStyle = `rgba(${rgb},0.75)`;
+        drawPoint(ctx, pcx, pcy, 3.5, compound.shape ?? "circle");
+      });
+    }
+  });
+
 }
 
 // ── Residuals chart ───────────────────────────────────────────────
@@ -1439,11 +1665,70 @@ export default function BioassayCurveFitter() {
     return s.size > 0 ? s : null;
   }, [excludedIndices, showOutliers, grubbsResults]);
 
+  // ── Multi-compound + overlay state (declared early — referenced in useEffect dep arrays below) ──
+  const [multiData, setMultiData] = useState(null);
+  const [multiIndex, setMultiIndex] = useState(0);
+  const [multiCsvError, setMultiCsvError] = useState(null);
+  const multiCsvRef = useRef(null);
+  const [overlayMode, setOverlayMode] = useState(false);
+  const [allFitResults, setAllFitResults] = useState(null);
+  const [selectedCompounds, setSelectedCompounds] = useState(null); // null = all selected
+  const [overlayEditIndex, setOverlayEditIndex] = useState(null); // index of compound being edited in left panel
+  const [navBarCollapsed, setNavBarCollapsed] = useState(false);
+
+  // ── Per-compound styles: { [compoundName]: { color, shape } } ──
+  const [compoundStyles, setCompoundStyles] = useState({});
+
+  // ── Manual axis range overrides (empty string = auto) ──
+  const [axisXMin, setAxisXMin] = useState("");
+  const [axisXMax, setAxisXMax] = useState("");
+  const [axisYMin, setAxisYMin] = useState("");
+  const [axisYMax, setAxisYMax] = useState("");
+
+  // ── Floating stats table state ──
+  const [statsTablePos, setStatsTablePos] = useState({ x: 16, y: 16 });
+  const [statsTableVisible, setStatsTableVisible] = useState(true);
+  const dragRef = useRef({ dragging: false, startX: 0, startY: 0, startPosX: 0, startPosY: 0 });
+
+  // Returns { color, shape } for a compound, falling back to defaults
+  const getCompoundStyle = useCallback((name, idx) => ({
+    color: compoundStyles[name]?.color ?? OVERLAY_COLORS[idx % OVERLAY_COLORS.length],
+    shape: compoundStyles[name]?.shape ?? "circle",
+  }), [compoundStyles]);
+
+  // Global drag tracking for the floating stats table
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = dragRef.current;
+      if (!d.dragging) return;
+      setStatsTablePos({ x: d.startPosX + (e.clientX - d.startX), y: d.startPosY + (e.clientY - d.startY) });
+    };
+    const onUp = () => { dragRef.current.dragging = false; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, []); // empty deps — accesses only refs and setters
+
   // Draw charts whenever data changes
   useEffect(() => {
-    if (mainCanvasRef.current && parsedData) {
-      drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices }, t);
-    } else if (mainCanvasRef.current) {
+    if (!mainCanvasRef.current) return;
+    const ao = {
+      xMin: axisXMin !== "" ? parseFloat(axisXMin) : null,
+      xMax: axisXMax !== "" ? parseFloat(axisXMax) : null,
+      yMin: axisYMin !== "" ? parseFloat(axisYMin) : null,
+      yMax: axisYMax !== "" ? parseFloat(axisYMax) : null,
+    };
+    if (overlayMode && allFitResults && allFitResults.length > 0) {
+      drawOverlayChart(
+        mainCanvasRef.current,
+        allFitResults.map((r, i) => ({ ...r, ...getCompoundStyle(r.name, i) })).filter(r => !selectedCompounds || selectedCompounds.has(r.name)),
+        { pointView, errorBarType, axisOverride: ao },
+        t
+      );
+    } else if (parsedData) {
+      const cStyle = multiData ? getCompoundStyle(multiData[multiIndex].name, multiIndex) : null;
+      drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices, compoundStyle: cStyle, axisOverride: ao }, t);
+    } else {
       const canvas = mainCanvasRef.current;
       const ctx = canvas.getContext("2d");
       const dpr = window.devicePixelRatio || 1;
@@ -1453,7 +1738,7 @@ export default function BioassayCurveFitter() {
       ctx.fillStyle = t.canvas || "#0a0f1a";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
-  }, [parsedData, fitResult, activeModel, pointView, errorBarType, chartOutlierIndices, excludedIndices, t]);
+  }, [parsedData, fitResult, activeModel, pointView, errorBarType, chartOutlierIndices, excludedIndices, t, overlayMode, allFitResults, compoundStyles, axisXMin, axisXMax, axisYMin, axisYMax, getCompoundStyle, multiData, multiIndex, selectedCompounds]);
 
   useEffect(() => {
     if (residCanvasRef.current && parsedData && fitResult && showResiduals) {
@@ -1464,8 +1749,24 @@ export default function BioassayCurveFitter() {
   // Resize handler
   useEffect(() => {
     const handleResize = () => {
-      if (mainCanvasRef.current && parsedData) {
-        drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices }, t);
+      const ao = {
+        xMin: axisXMin !== "" ? parseFloat(axisXMin) : null,
+        xMax: axisXMax !== "" ? parseFloat(axisXMax) : null,
+        yMin: axisYMin !== "" ? parseFloat(axisYMin) : null,
+        yMax: axisYMax !== "" ? parseFloat(axisYMax) : null,
+      };
+      if (mainCanvasRef.current) {
+        if (overlayMode && allFitResults && allFitResults.length > 0) {
+          drawOverlayChart(
+            mainCanvasRef.current,
+            allFitResults.map((r, i) => ({ ...r, ...getCompoundStyle(r.name, i) })).filter(r => !selectedCompounds || selectedCompounds.has(r.name)),
+            { pointView, errorBarType, axisOverride: ao },
+            t
+          );
+        } else if (parsedData) {
+          const cStyle = multiData ? getCompoundStyle(multiData[multiIndex].name, multiIndex) : null;
+          drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices, compoundStyle: cStyle, axisOverride: ao }, t);
+        }
       }
       if (residCanvasRef.current && parsedData && fitResult && showResiduals) {
         drawResiduals(residCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, t);
@@ -1473,7 +1774,30 @@ export default function BioassayCurveFitter() {
     };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [parsedData, fitResult, activeModel, showResiduals, pointView, errorBarType, chartOutlierIndices, excludedIndices, t]);
+  }, [parsedData, fitResult, activeModel, showResiduals, pointView, errorBarType, chartOutlierIndices, excludedIndices, t, overlayMode, allFitResults, compoundStyles, axisXMin, axisXMax, axisYMin, axisYMax, getCompoundStyle, multiData, multiIndex, selectedCompounds]);
+
+  // Load a compound's CURRENT stored fit into the left panel (no re-fitting).
+  // Used in overlay mode to select a compound for editing via the model panel.
+  // Declared before the tooltip/click useEffect to avoid TDZ in its dependency array.
+  const loadCompoundForOverlayEdit = useCallback((idx) => {
+    if (!allFitResults || !multiData || idx == null) return;
+    const r = allFitResults[idx];
+    const csv = compoundToCSV(multiData[idx]);
+    setRawData(csv);
+    setComparison(null);
+    setError(null);
+    setGrubbsResults(null);
+    setShowOutliers(false);
+    setSelectedGrubbsGroup(null);
+    setExcludedIndices(new Set());
+    setBgStats(null);
+    setParsedData({ xData: r.xData, yData: r.yData, yRaw: r.yData,
+                    bgSubtracted: 0, normMin: 0, normMax: 1, normalized: false });
+    setFitResult(r.fitResult);
+    setActiveModel(r.modelType ?? "4PL");
+    setModelType(r.modelType ?? "4PL");
+    setOverlayEditIndex(idx);
+  }, [allFitResults, multiData]);
 
   // Tooltip handler for main chart
   useEffect(() => {
@@ -1483,7 +1807,7 @@ export default function BioassayCurveFitter() {
 
     const handleMouseMove = (e) => {
       const meta = canvas._chartMeta;
-      if (!meta || !parsedData) { tooltip.style.display = "none"; return; }
+      if (!meta || (!parsedData && !meta.isOverlay)) { tooltip.style.display = "none"; return; }
 
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
@@ -1500,6 +1824,52 @@ export default function BioassayCurveFitter() {
       // Convert mouse position to data coordinates
       const logXMouse = xMin + (mx - pad.left) / plotW * (xMax - xMin);
       const yMouse = yMax - (my - pad.top) / plotH * (yMax - yMin);
+
+      // ── Overlay mode: find nearest curve or data point among all compounds ──
+      if (meta.isOverlay && meta.overlayCompounds) {
+        const containerRect = chartContainerRef.current ? chartContainerRef.current.getBoundingClientRect() : rect;
+        const xVal = Math.pow(10, logXMouse);
+        let bestDist = 20; // px threshold
+        let bestCompound = null;
+        for (const compound of meta.overlayCompounds) {
+          // Data point proximity (euclidean, wins at ≤15 px)
+          if (compound.xData) {
+            for (let i = 0; i < compound.xData.length; i++) {
+              const x = compound.xData[i];
+              if (x <= 0) continue;
+              const dist = Math.sqrt((mx - meta.toCanvasX(Math.log10(x))) ** 2 + (my - meta.toCanvasY(compound.yData[i])) ** 2);
+              if (dist < 15 && dist < bestDist) { bestDist = dist; bestCompound = compound; }
+            }
+          }
+          // Curve proximity (vertical)
+          if (!compound.fitResult) continue;
+          const modelFn = getModelFn(compound.modelType);
+          const yFit = modelFn(xVal, compound.fitResult.params);
+          const cyFit = meta.toCanvasY(yFit);
+          const dist = Math.abs(my - cyFit);
+          if (dist < bestDist) { bestDist = dist; bestCompound = compound; }
+        }
+        if (bestCompound) {
+          const ec50 = bestCompound.fitResult.params[2];
+          const ec50Str = ec50 > 0 ? ec50.toExponential(3) : "N/A";
+          const yFit = getModelFn(bestCompound.modelType)(xVal, bestCompound.fitResult.params);
+          const fmtY = Math.abs(yFit) < 0.01 || Math.abs(yFit) >= 100000 ? yFit.toExponential(3) : yFit.toFixed(1);
+          tooltip.innerHTML = `<span style="color:${bestCompound.color};font-weight:600">${bestCompound.name}</span>&nbsp; y: ${fmtY}&nbsp; EC50: ${ec50Str}`;
+          let tx = e.clientX - containerRect.left + 14;
+          let ty = e.clientY - containerRect.top - 28;
+          const tw = tooltip.offsetWidth || 180;
+          if (tx + tw > containerRect.width - 8) tx = e.clientX - containerRect.left - tw - 10;
+          if (ty < 4) ty = 4;
+          tooltip.style.left = tx + "px";
+          tooltip.style.top = ty + "px";
+          tooltip.style.display = "block";
+          canvas.style.cursor = "pointer";
+        } else {
+          tooltip.style.display = "none";
+          canvas.style.cursor = "crosshair";
+        }
+        return;
+      }
 
       let nearestDist = Infinity;
       let nearestInfo = null;
@@ -1596,15 +1966,62 @@ export default function BioassayCurveFitter() {
 
     const handleMouseLeave = () => {
       tooltip.style.display = "none";
+      canvas.style.cursor = "crosshair";
+    };
+
+    // Click on overlay canvas: select the nearest compound (curve or data point) for left-panel editing
+    const handleClick = (e) => {
+      const meta = canvas._chartMeta;
+      if (!meta || !meta.isOverlay || !meta.overlayCompounds) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const { pad, plotW, plotH, xMin, xMax } = meta;
+
+      if (mx < pad.left || mx > pad.left + plotW || my < pad.top || my > pad.top + plotH) return;
+
+      const logXMouse = xMin + (mx - pad.left) / plotW * (xMax - xMin);
+      const xVal = Math.pow(10, logXMouse);
+
+      let bestDist = Infinity;
+      let bestCompound = null;
+
+      for (const compound of meta.overlayCompounds) {
+        // Check data point proximity (euclidean, 15 px)
+        if (compound.xData) {
+          for (let i = 0; i < compound.xData.length; i++) {
+            const x = compound.xData[i];
+            if (x <= 0) continue;
+            const px = meta.toCanvasX(Math.log10(x));
+            const py = meta.toCanvasY(compound.yData[i]);
+            const dist = Math.sqrt((mx - px) ** 2 + (my - py) ** 2);
+            if (dist < 15 && dist < bestDist) { bestDist = dist; bestCompound = compound; }
+          }
+        }
+        // Check curve proximity (vertical, 12 px)
+        if (compound.fitResult) {
+          const yFit = getModelFn(compound.modelType)(xVal, compound.fitResult.params);
+          const dist = Math.abs(my - meta.toCanvasY(yFit));
+          if (dist < 12 && dist < bestDist) { bestDist = dist; bestCompound = compound; }
+        }
+      }
+
+      if (bestCompound && allFitResults) {
+        const idx = allFitResults.findIndex(r => r.name === bestCompound.name);
+        if (idx !== -1) loadCompoundForOverlayEdit(idx);
+      }
     };
 
     canvas.addEventListener("mousemove", handleMouseMove);
     canvas.addEventListener("mouseleave", handleMouseLeave);
+    canvas.addEventListener("click", handleClick);
     return () => {
       canvas.removeEventListener("mousemove", handleMouseMove);
       canvas.removeEventListener("mouseleave", handleMouseLeave);
+      canvas.removeEventListener("click", handleClick);
     };
-  }, [parsedData, fitResult, activeModel, pointView]);
+  }, [parsedData, fitResult, activeModel, pointView, overlayMode, allFitResults, loadCompoundForOverlayEdit]);
 
   const paramLabels = activeModel === "5PL"
     ? ["Bottom", "Hill", "EC50", "Top", "S (asymmetry)"]
@@ -2001,12 +2418,6 @@ export default function BioassayCurveFitter() {
   const [interpY, setInterpY] = useState("");
   const [interpResult, setInterpResult] = useState(null);
 
-  // ── Multi-Compound CSV state ──────────────────────────────────
-  const [multiData, setMultiData] = useState(null);
-  const [multiIndex, setMultiIndex] = useState(0);
-  const [multiCsvError, setMultiCsvError] = useState(null);
-  const multiCsvRef = useRef(null);
-
   // Helper: reset all fit-related state, load a compound's data, and auto-fit
   const loadCompound = useCallback((compound) => {
     const csv = compoundToCSV(compound);
@@ -2045,7 +2456,46 @@ export default function BioassayCurveFitter() {
   useEffect(() => {
     if (!multiData) return;
     loadCompound(multiData[multiIndex]);
+    setOverlayEditIndex(null);
   }, [multiIndex, multiData]); // intentionally not including loadCompound to avoid stale closure loop
+
+  // Pre-fit all compounds for overlay mode whenever multiData changes
+  useEffect(() => {
+    if (!multiData) { setAllFitResults(null); setOverlayMode(false); return; }
+    const results = multiData.map(compound => {
+      try {
+        const csv = compoundToCSV(compound);
+        const { xData, yData } = parseData(csv);
+        if (xData.length < 4) return { name: compound.name, xData: [], yData: [], fitResult: null, modelType: null };
+        const fit4 = fitModel(xData, yData, model4PL, false);
+        const fit5 = xData.length >= 5 ? fitModel(xData, yData, model5PL, true) : null;
+        let fitResult, modelType;
+        if (!fit5 || Math.abs(fit5.params[4] - 1) < 0.05) {
+          modelType = "4PL"; fitResult = fit4;
+        } else {
+          const deltaAICc = (fit4?.aicc ?? Infinity) - fit5.aicc;
+          modelType = (deltaAICc > 2 && fit4.bic - fit5.bic > 0) ? "5PL" : "4PL";
+          fitResult = modelType === "5PL" ? fit5 : fit4;
+        }
+        return { name: compound.name, xData, yData, fitResult, modelType };
+      } catch {
+        return { name: compound.name, xData: [], yData: [], fitResult: null, modelType: null };
+      }
+    });
+    setAllFitResults(results);
+    setSelectedCompounds(null); // reset to all-selected when new CSV loaded
+    setOverlayEditIndex(null);  // reset overlay editing on new CSV
+  }, [multiData, parseData]);
+
+  // While a compound is selected for overlay editing, propagate left-panel fit changes back to allFitResults.
+  // This makes the overlay canvas update live when the user re-fits or switches model (View 4PL / View 5PL).
+  useEffect(() => {
+    if (!overlayMode || overlayEditIndex === null || !fitResult || !activeModel) return;
+    setAllFitResults(prev => prev
+      ? prev.map((r, i) => i === overlayEditIndex ? { ...r, fitResult, modelType: activeModel } : r)
+      : prev
+    );
+  }, [fitResult, activeModel, overlayMode, overlayEditIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleMultiCsv = useCallback((file) => {
     if (!file) return;
@@ -2660,6 +3110,25 @@ export default function BioassayCurveFitter() {
             </div>
           )}
 
+          {/* Overlay editing indicator */}
+          {overlayMode && overlayEditIndex !== null && allFitResults?.[overlayEditIndex] && (() => {
+            const editColor = getCompoundStyle(allFitResults[overlayEditIndex].name, overlayEditIndex).color;
+            return (
+              <div style={{
+                padding: "6px 10px",
+                border: `1px solid ${editColor}`,
+                borderRadius: 6,
+                fontSize: 10,
+                color: editColor,
+                fontFamily: "'JetBrains Mono', monospace",
+                display: "flex", alignItems: "center", gap: 6,
+              }}>
+                <span>✏</span>
+                <span>Editing overlay: <strong>{allFitResults[overlayEditIndex].name}</strong></span>
+              </div>
+            );
+          })()}
+
           {/* Fit Button */}
           <button
             onClick={runFit}
@@ -2923,106 +3392,254 @@ export default function BioassayCurveFitter() {
               background: t.panel,
               border: `1px solid ${t.tealBorder || "rgba(0,230,180,0.25)"}`,
               borderRadius: 10,
-              padding: "12px 16px",
+              padding: navBarCollapsed ? "8px 16px" : "12px 16px",
               display: "flex",
               alignItems: "center",
               gap: 8,
               flexWrap: "wrap",
             }}>
-              {/* Compound label */}
+              {/* Always-visible: label + current compound name */}
               <span style={{ fontSize: 11, fontWeight: 700, color: t.teal, textTransform: "uppercase", letterSpacing: 1, whiteSpace: "nowrap" }}>
                 Multi CSV
               </span>
               <span style={{ fontSize: 11, fontWeight: 600, color: t.text, whiteSpace: "nowrap" }}>
                 {multiData[multiIndex].name}
               </span>
-              <span style={{ fontSize: 10, color: t.textDim, whiteSpace: "nowrap" }}>
-                n={multiData[multiIndex].nReplicates} · {multiData[multiIndex].points.length} conc
-              </span>
 
-              {/* Spacer */}
-              <div style={{ flex: 1, minWidth: 8 }} />
+              {navBarCollapsed ? (
+                /* Collapsed state: just spacer + Expand button */
+                <>
+                  <div style={{ flex: 1, minWidth: 8 }} />
+                  <button
+                    onClick={() => setNavBarCollapsed(false)}
+                    style={{
+                      padding: "4px 10px",
+                      background: t.btnInactive,
+                      border: `1px solid ${t.panelBorder}`,
+                      borderRadius: 5,
+                      color: t.textMuted,
+                      fontSize: 9,
+                      cursor: "pointer",
+                      fontFamily: "'JetBrains Mono', monospace",
+                      whiteSpace: "nowrap",
+                    }}
+                  >▼ Expand</button>
+                </>
+              ) : (
+                /* Expanded state: full controls */
+                <>
+                  <span style={{ fontSize: 10, color: t.textDim, whiteSpace: "nowrap" }}>
+                    n={multiData[multiIndex].nReplicates} · {multiData[multiIndex].points.length} conc
+                  </span>
 
-              {/* Prev button */}
-              <button
-                onClick={() => setMultiIndex(i => Math.max(0, i - 1))}
-                disabled={multiIndex === 0}
-                style={{
-                  width: 28, height: 28, flexShrink: 0,
-                  background: t.btnInactive,
-                  border: `1px solid ${t.panelBorder}`,
-                  borderRadius: 5,
-                  color: multiIndex === 0 ? t.textFaint : t.textMuted,
-                  fontSize: 14,
-                  cursor: multiIndex === 0 ? "not-allowed" : "pointer",
-                  fontFamily: "monospace",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  lineHeight: 1,
-                }}
-              >←</button>
+                  {/* Spacer */}
+                  <div style={{ flex: 1, minWidth: 8 }} />
 
-              {/* Dropdown */}
-              <select
-                value={multiIndex}
-                onChange={e => setMultiIndex(Number(e.target.value))}
-                style={{
-                  padding: "4px 8px",
-                  background: t.input,
-                  border: `1px solid ${t.inputBorder}`,
-                  borderRadius: 5,
-                  color: t.text,
-                  fontSize: 11,
-                  fontFamily: "'JetBrains Mono', monospace",
-                  outline: "none",
-                  cursor: "pointer",
-                  maxWidth: 160,
-                }}
-              >
-                {multiData.map((c, i) => (
-                  <option key={i} value={i}>{c.name}</option>
-                ))}
-              </select>
+                  {/* Prev button */}
+                  <button
+                    onClick={() => setMultiIndex(i => Math.max(0, i - 1))}
+                    disabled={multiIndex === 0}
+                    style={{
+                      width: 28, height: 28, flexShrink: 0,
+                      background: t.btnInactive,
+                      border: `1px solid ${t.panelBorder}`,
+                      borderRadius: 5,
+                      color: multiIndex === 0 ? t.textFaint : t.textMuted,
+                      fontSize: 14,
+                      cursor: multiIndex === 0 ? "not-allowed" : "pointer",
+                      fontFamily: "monospace",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      lineHeight: 1,
+                    }}
+                  >←</button>
 
-              {/* Counter */}
-              <span style={{ fontSize: 10, color: t.textDim, whiteSpace: "nowrap", minWidth: 36 }}>
-                {multiIndex + 1}/{multiData.length}
-              </span>
+                  {/* Dropdown */}
+                  <select
+                    value={multiIndex}
+                    onChange={e => setMultiIndex(Number(e.target.value))}
+                    style={{
+                      padding: "4px 8px",
+                      background: t.input,
+                      border: `1px solid ${t.inputBorder}`,
+                      borderRadius: 5,
+                      color: t.text,
+                      fontSize: 11,
+                      fontFamily: "'JetBrains Mono', monospace",
+                      outline: "none",
+                      cursor: "pointer",
+                      maxWidth: 160,
+                    }}
+                  >
+                    {multiData.map((c, i) => (
+                      <option key={i} value={i}>{c.name}</option>
+                    ))}
+                  </select>
 
-              {/* Next button */}
-              <button
-                onClick={() => setMultiIndex(i => Math.min(multiData.length - 1, i + 1))}
-                disabled={multiIndex === multiData.length - 1}
-                style={{
-                  width: 28, height: 28, flexShrink: 0,
-                  background: t.btnInactive,
-                  border: `1px solid ${t.panelBorder}`,
-                  borderRadius: 5,
-                  color: multiIndex === multiData.length - 1 ? t.textFaint : t.textMuted,
-                  fontSize: 14,
-                  cursor: multiIndex === multiData.length - 1 ? "not-allowed" : "pointer",
-                  fontFamily: "monospace",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  lineHeight: 1,
-                }}
-              >→</button>
+                  {/* Counter */}
+                  <span style={{ fontSize: 10, color: t.textDim, whiteSpace: "nowrap", minWidth: 36 }}>
+                    {multiIndex + 1}/{multiData.length}
+                  </span>
 
-              {/* Close */}
-              <button
-                onClick={() => { setMultiData(null); setMultiCsvError(null); }}
-                style={{
-                  padding: "4px 10px",
-                  background: t.btnInactive,
-                  border: `1px solid ${t.panelBorder}`,
-                  borderRadius: 5,
-                  color: t.textMuted,
-                  fontSize: 9,
-                  cursor: "pointer",
-                  fontFamily: "'JetBrains Mono', monospace",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                ✕ Close
-              </button>
+                  {/* Next button */}
+                  <button
+                    onClick={() => setMultiIndex(i => Math.min(multiData.length - 1, i + 1))}
+                    disabled={multiIndex === multiData.length - 1}
+                    style={{
+                      width: 28, height: 28, flexShrink: 0,
+                      background: t.btnInactive,
+                      border: `1px solid ${t.panelBorder}`,
+                      borderRadius: 5,
+                      color: multiIndex === multiData.length - 1 ? t.textFaint : t.textMuted,
+                      fontSize: 14,
+                      cursor: multiIndex === multiData.length - 1 ? "not-allowed" : "pointer",
+                      fontFamily: "monospace",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      lineHeight: 1,
+                    }}
+                  >→</button>
+
+                  {/* Overlay toggle */}
+                  <button
+                    onClick={() => { setOverlayMode(m => !m); setOverlayEditIndex(null); }}
+                    style={{
+                      padding: "4px 10px",
+                      background: overlayMode ? (t.tealBg || "rgba(0,230,180,0.12)") : t.btnInactive,
+                      border: `1px solid ${overlayMode ? (t.teal || "#00e6b4") : t.panelBorder}`,
+                      borderRadius: 5,
+                      color: overlayMode ? (t.teal || "#00e6b4") : t.textMuted,
+                      fontSize: 9,
+                      cursor: "pointer",
+                      fontFamily: "'JetBrains Mono', monospace",
+                      whiteSpace: "nowrap",
+                      fontWeight: overlayMode ? 700 : 400,
+                    }}
+                  >
+                    {overlayMode ? "⊞ Single View" : "⊞ Overlay"}
+                  </button>
+
+                  {/* Stats table toggle — only in overlay mode */}
+                  {overlayMode && (
+                    <button
+                      onClick={() => setStatsTableVisible(v => !v)}
+                      style={{
+                        padding: "4px 10px",
+                        background: statsTableVisible ? (t.tealBg || "rgba(0,230,180,0.12)") : t.btnInactive,
+                        border: `1px solid ${statsTableVisible ? (t.teal || "#00e6b4") : t.panelBorder}`,
+                        borderRadius: 5,
+                        color: statsTableVisible ? (t.teal || "#00e6b4") : t.textMuted,
+                        fontSize: 9,
+                        cursor: "pointer",
+                        fontFamily: "'JetBrains Mono', monospace",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {statsTableVisible ? "Hide Stats" : "📊 Stats"}
+                    </button>
+                  )}
+
+                  {/* Collapse button */}
+                  <button
+                    onClick={() => setNavBarCollapsed(true)}
+                    style={{
+                      padding: "4px 10px",
+                      background: t.btnInactive,
+                      border: `1px solid ${t.panelBorder}`,
+                      borderRadius: 5,
+                      color: t.textMuted,
+                      fontSize: 9,
+                      cursor: "pointer",
+                      fontFamily: "'JetBrains Mono', monospace",
+                      whiteSpace: "nowrap",
+                    }}
+                  >▲ Collapse</button>
+
+                  {/* Per-compound color + shape pickers — only in overlay mode */}
+                  {overlayMode && (
+                    <div style={{
+                      width: "100%",
+                      borderTop: `1px solid rgba(140,170,210,0.1)`,
+                      paddingTop: 8,
+                      marginTop: 4,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 5,
+                    }}>
+                      {multiData.map((c, i) => {
+                        const s = getCompoundStyle(c.name, i);
+                        const isSelected = !selectedCompounds || selectedCompounds.has(c.name);
+                        const toggleSelected = () => setSelectedCompounds(prev => {
+                          const base = prev ?? new Set(multiData.map(x => x.name));
+                          const next = new Set(base);
+                          if (next.has(c.name)) { next.delete(c.name); } else { next.add(c.name); }
+                          return next.size === multiData.length ? null : next; // null = all selected
+                        });
+                        return (
+                          <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 6, opacity: isSelected ? 1 : 0.4 }}>
+                            {/* Visibility toggle */}
+                            <button
+                              onClick={toggleSelected}
+                              style={{
+                                width: 18, height: 18, flexShrink: 0,
+                                background: isSelected ? s.color : "transparent",
+                                border: `1px solid ${isSelected ? s.color : "rgba(140,170,210,0.3)"}`,
+                                borderRadius: 3, cursor: "pointer", fontSize: 9,
+                                color: isSelected ? "#000" : "rgba(160,190,230,0.4)",
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                              }}
+                              title={isSelected ? "Hide compound" : "Show compound"}
+                            >{isSelected ? "✓" : ""}</button>
+                            {/* Color picker */}
+                            <input
+                              type="color"
+                              value={s.color}
+                              onChange={e => setCompoundStyles(prev => ({ ...prev, [c.name]: { ...prev[c.name], color: e.target.value } }))}
+                              style={{ width: 22, height: 22, border: "none", padding: 0, borderRadius: 3, cursor: "pointer", background: "transparent", flexShrink: 0 }}
+                              title="Pick color"
+                            />
+                            {/* Shape picker */}
+                            {[["circle","●"],["square","■"],["triangle","▲"],["diamond","◆"]].map(([sh, icon]) => (
+                              <button
+                                key={sh}
+                                onClick={() => setCompoundStyles(prev => ({ ...prev, [c.name]: { ...prev[c.name], shape: sh } }))}
+                                style={{
+                                  width: 20, height: 20, flexShrink: 0,
+                                  background: s.shape === sh ? s.color : "transparent",
+                                  border: `1px solid ${s.shape === sh ? s.color : "rgba(140,170,210,0.25)"}`,
+                                  borderRadius: 3,
+                                  cursor: "pointer",
+                                  fontSize: 10,
+                                  color: s.shape === sh ? "#000" : "rgba(160,190,230,0.55)",
+                                  lineHeight: 1,
+                                  display: "flex", alignItems: "center", justifyContent: "center",
+                                }}
+                                title={sh}
+                              >{icon}</button>
+                            ))}
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => loadCompoundForOverlayEdit(i)}
+                              onKeyDown={e => e.key === "Enter" && loadCompoundForOverlayEdit(i)}
+                              title="Click to edit this compound's fit in the left panel"
+                              style={{
+                                fontSize: 10,
+                                fontFamily: "'JetBrains Mono', monospace",
+                                cursor: "pointer",
+                                padding: "1px 5px",
+                                borderRadius: 3,
+                                color: overlayEditIndex === i ? "#0a0f1a" : s.color,
+                                background: overlayEditIndex === i ? s.color : "transparent",
+                                border: `1px solid ${overlayEditIndex === i ? s.color : "transparent"}`,
+                                flexShrink: 0,
+                              }}
+                            >{c.name}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
 
@@ -3151,6 +3768,131 @@ export default function BioassayCurveFitter() {
                   backdropFilter: "blur(4px)",
                 }}
               />
+
+              {/* Draggable stats table — floats inside chart area in overlay mode */}
+              {overlayMode && allFitResults && statsTableVisible && (
+                <div style={{
+                  position: "absolute",
+                  left: statsTablePos.x,
+                  top: statsTablePos.y,
+                  background: "rgba(10,15,26,0.88)",
+                  border: "1px solid rgba(140,170,210,0.2)",
+                  borderRadius: 8,
+                  zIndex: 20,
+                  minWidth: 260,
+                  backdropFilter: "blur(8px)",
+                  userSelect: "none",
+                  fontFamily: "'JetBrains Mono', monospace",
+                }}>
+                  {/* Drag handle */}
+                  <div
+                    onMouseDown={e => {
+                      dragRef.current = { dragging: true, startX: e.clientX, startY: e.clientY, startPosX: statsTablePos.x, startPosY: statsTablePos.y };
+                      e.preventDefault();
+                    }}
+                    style={{
+                      cursor: "grab",
+                      padding: "5px 10px",
+                      borderBottom: "1px solid rgba(140,170,210,0.12)",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                  >
+                    <span style={{ fontSize: 9, fontWeight: 700, color: t.teal || "#00e6b4", letterSpacing: 1 }}>COMPOUND STATS</span>
+                    <button
+                      onClick={() => setStatsTableVisible(false)}
+                      style={{ background: "none", border: "none", color: "rgba(160,190,230,0.5)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px" }}
+                    >×</button>
+                  </div>
+                  {/* Stats table */}
+                  <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse", padding: "4px 0" }}>
+                    <thead>
+                      <tr style={{ color: "rgba(160,190,230,0.45)", textAlign: "left" }}>
+                        {["Compound","EC50","Hill","R²","Model"].map(h => (
+                          <th key={h} style={{ padding: "4px 8px", fontWeight: 600 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allFitResults.map((r, i) => ({ r, i })).filter(({ r }) => !selectedCompounds || selectedCompounds.has(r.name)).map(({ r, i }) => {
+                        const s = getCompoundStyle(r.name, i);
+                        const p = r.fitResult?.params;
+                        const ec50 = p?.[2];
+                        const hill = p?.[1];
+                        const r2val = r.fitResult?.r2;
+                        return (
+                          <tr
+                            key={r.name}
+                            onClick={() => loadCompoundForOverlayEdit(i)}
+                            style={{
+                              borderTop: "1px solid rgba(140,170,210,0.07)",
+                              cursor: "pointer",
+                              background: overlayEditIndex === i ? "rgba(255,255,255,0.06)" : "transparent",
+                            }}
+                          >
+                            <td style={{ padding: "3px 8px" }}>
+                              <span style={{ color: s.color }}>●</span>{" "}
+                              <span style={{ color: "rgba(200,220,250,0.8)" }}>{r.name.length > 12 ? r.name.slice(0, 11) + "…" : r.name}</span>
+                            </td>
+                            <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{ec50 > 0 ? ec50.toExponential(2) : "—"}</td>
+                            <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{hill != null ? hill.toFixed(2) : "—"}</td>
+                            <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{r2val != null ? r2val.toFixed(3) : "—"}</td>
+                            <td style={{ padding: "3px 8px", color: "rgba(160,190,230,0.4)" }}>{r.modelType || "—"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Axis range override inputs */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 9, color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>X axis (log₁₀):</span>
+              {[["xMin", axisXMin, setAxisXMin, "auto"], ["xMax", axisXMax, setAxisXMax, "auto"]].map(([key, val, setter, ph]) => (
+                <input
+                  key={key}
+                  type="number"
+                  value={val}
+                  placeholder={ph}
+                  onChange={e => setter(e.target.value)}
+                  style={{
+                    width: 58, padding: "2px 5px",
+                    background: t.input, border: `1px solid ${t.inputBorder}`,
+                    borderRadius: 4, color: t.text, fontSize: 10,
+                    fontFamily: "'JetBrains Mono', monospace", outline: "none",
+                  }}
+                />
+              ))}
+              <span style={{ fontSize: 9, color: t.textMuted, fontFamily: "'JetBrains Mono', monospace", marginLeft: 6 }}>Y axis:</span>
+              {[["yMin", axisYMin, setAxisYMin, "auto"], ["yMax", axisYMax, setAxisYMax, "auto"]].map(([key, val, setter, ph]) => (
+                <input
+                  key={key}
+                  type="number"
+                  value={val}
+                  placeholder={ph}
+                  onChange={e => setter(e.target.value)}
+                  style={{
+                    width: 68, padding: "2px 5px",
+                    background: t.input, border: `1px solid ${t.inputBorder}`,
+                    borderRadius: 4, color: t.text, fontSize: 10,
+                    fontFamily: "'JetBrains Mono', monospace", outline: "none",
+                  }}
+                />
+              ))}
+              {(axisXMin || axisXMax || axisYMin || axisYMax) && (
+                <button
+                  onClick={() => { setAxisXMin(""); setAxisXMax(""); setAxisYMin(""); setAxisYMax(""); }}
+                  style={{
+                    padding: "2px 8px", background: t.btnInactive,
+                    border: `1px solid ${t.panelBorder}`, borderRadius: 4,
+                    color: t.textMuted, fontSize: 9, cursor: "pointer",
+                    fontFamily: "'JetBrains Mono', monospace",
+                  }}
+                >↺ Auto</button>
+              )}
             </div>
           </div>
 
