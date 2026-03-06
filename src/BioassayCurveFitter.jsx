@@ -1239,6 +1239,741 @@ const EXAMPLE_DATASETS = {
 
 const SAMPLE_DATA = EXAMPLE_DATASETS["Full sigmoid (5 reps, outliers)"];
 
+// ── Report Builder ─────────────────────────────────────────────────
+// A WYSIWYG report editor: drag/resize/edit items, then export PNG or PDF.
+
+const RB_PAGE_SIZES = {
+  letter: { w: 816, h: 1056 },
+  a4:     { w: 794, h: 1123 },
+};
+
+function rbFormatParam(v) {
+  if (v == null) return "--";
+  return Math.abs(v) < 0.01 || Math.abs(v) > 10000 ? v.toExponential(4) : v.toFixed(4);
+}
+
+function rbGetFitParamsRows(fitResult, modelType) {
+  if (!fitResult) return [];
+  const labels = modelType === "5PL"
+    ? ["Bottom", "Hill", "EC50", "Top", "S (asymmetry)"]
+    : ["A (min)", "B (slope)", "C (EC50)", "D (max)"];
+  const rows = labels.map((l, i) => [l, rbFormatParam(fitResult.params[i])]);
+  if (modelType === "5PL" && fitResult.bioEC50) rows.push(["Bio EC50", rbFormatParam(fitResult.bioEC50)]);
+  return rows;
+}
+
+function rbGetGoFRows(fitResult) {
+  if (!fitResult) return [];
+  return [
+    ["R²",          fitResult.r2.toFixed(6)],
+    ["RMSE",        fitResult.rmse.toFixed(6)],
+    ["SSR",         fitResult.ssr.toExponential(4)],
+    ["AICc",        fitResult.aicc?.toFixed(2) ?? "--"],
+    ["BIC",         fitResult.bic?.toFixed(2) ?? "--"],
+    ["n (data pts)",String(fitResult.n)],
+    ["k (params)",  String(fitResult.k)],
+    ["Converged",   fitResult.converged ? "Yes" : "No"],
+  ];
+}
+
+// Render all report items to an offscreen canvas (used for PNG/PDF export)
+async function rbDrawItemsToCanvas(ctx, items, page) {
+  for (const item of items) {
+    ctx.save();
+    const { x, y, width: w, height: h } = item;
+    switch (item.type) {
+      case "chart-image":
+      case "overlay-chart": {
+        if (!item.dataUrl) break;
+        await new Promise(resolve => {
+          const img = new Image();
+          img.onload = () => { ctx.drawImage(img, x, y, w, h); resolve(); };
+          img.onerror = resolve;
+          img.src = item.dataUrl;
+        });
+        if (item.caption) {
+          ctx.fillStyle = "#555";
+          ctx.font = "italic 10px Arial, sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(item.caption, x + w / 2, y + h + 14);
+        }
+        break;
+      }
+      case "text":
+      case "heading": {
+        const fs = item.fontSize || 12;
+        const weight = item.fontWeight === "bold" ? "bold" : "normal";
+        const style  = item.fontStyle  === "italic" ? "italic" : "normal";
+        ctx.font = `${style} ${weight} ${fs}px Arial, sans-serif`;
+        ctx.fillStyle = item.color || "#1a2a40";
+        ctx.textAlign = item.align || "left";
+        const tx = item.align === "center" ? x + w / 2 : item.align === "right" ? x + w - 4 : x + 4;
+        const words = (item.content || "").split(" ");
+        let line = "", ly = y + fs;
+        const maxW = w - 8;
+        for (const word of words) {
+          const test = line ? line + " " + word : word;
+          if (line && ctx.measureText(test).width > maxW) {
+            ctx.fillText(line, tx, ly); line = word; ly += fs * 1.4;
+          } else { line = test; }
+        }
+        if (line) ctx.fillText(line, tx, ly);
+        break;
+      }
+      case "divider": {
+        ctx.strokeStyle = item.color || "#cccccc";
+        ctx.lineWidth = item.thickness || 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y + h / 2);
+        ctx.lineTo(x + w, y + h / 2);
+        ctx.stroke();
+        break;
+      }
+      case "fit-params":
+        rbDrawTableToCanvas(ctx, item, rbGetFitParamsRows(item.fitResult, item.modelType), item.title);
+        break;
+      case "gof-table":
+        rbDrawTableToCanvas(ctx, item, rbGetGoFRows(item.fitResult), item.title);
+        break;
+      case "stats-table":
+        rbDrawStatsTableToCanvas(ctx, item);
+        break;
+      default: break;
+    }
+    ctx.restore();
+  }
+}
+
+function rbDrawTableToCanvas(ctx, item, rows, title) {
+  const { x, y, width: w, height: h } = item;
+  const titleH = title ? 28 : 0;
+  const rowH   = Math.min(22, rows.length ? (h - titleH) / rows.length : 22);
+  const pad    = 8;
+  ctx.fillStyle = "#f8fafd"; ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = "#c8d8ec"; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
+  if (title) {
+    ctx.fillStyle = "#1a3a6a"; ctx.fillRect(x, y, w, titleH);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 11px Arial, sans-serif";
+    ctx.textAlign = "left"; ctx.fillText(title, x + pad, y + titleH - 9);
+  }
+  rows.forEach(([label, val], i) => {
+    const ry = y + titleH + i * rowH;
+    if (i % 2 === 0) { ctx.fillStyle = "rgba(200,220,240,0.18)"; ctx.fillRect(x, ry, w, rowH); }
+    ctx.strokeStyle = "rgba(100,140,180,0.12)"; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(x, ry + rowH); ctx.lineTo(x + w, ry + rowH); ctx.stroke();
+    ctx.fillStyle = "#446688"; ctx.font = "10px Arial, sans-serif"; ctx.textAlign = "left";
+    ctx.fillText(label, x + pad, ry + rowH - 6);
+    ctx.fillStyle = "#1a2a3a"; ctx.font = "bold 10px Arial, sans-serif"; ctx.textAlign = "right";
+    ctx.fillText(String(val), x + w - pad, ry + rowH - 6);
+  });
+}
+
+// ── Compound summary table column definitions ─────────────────────
+// format(r) receives one entry from allFitResults: {name, fitResult, modelType}
+const RB_STAT_COLUMNS = [
+  { key: "name",     label: "Compound",   fmt: r => (r.name || "--").slice(0, 20) },
+  { key: "ec50",     label: "EC50",       fmt: r => r.fitResult?.params?.[2] > 0 ? r.fitResult.params[2].toExponential(2) : "--" },
+  { key: "bio_ec50", label: "Bio EC50",   fmt: r => r.fitResult?.bioEC50  > 0 ? r.fitResult.bioEC50.toExponential(2) : "--" },
+  { key: "hill",     label: "Hill",       fmt: r => r.fitResult?.params?.[1] != null ? r.fitResult.params[1].toFixed(3) : "--" },
+  { key: "top",      label: "Top (D)",    fmt: r => r.fitResult?.params?.[3] != null ? r.fitResult.params[3].toFixed(3) : "--" },
+  { key: "bottom",   label: "Bottom (A)", fmt: r => r.fitResult?.params?.[0] != null ? r.fitResult.params[0].toFixed(3) : "--" },
+  { key: "s_param",  label: "S (asym)",   fmt: r => r.fitResult?.params?.length >= 5 ? r.fitResult.params[4].toFixed(3) : "--" },
+  { key: "r2",       label: "R²",         fmt: r => r.fitResult?.r2   != null ? r.fitResult.r2.toFixed(4)   : "--" },
+  { key: "rmse",     label: "RMSE",       fmt: r => r.fitResult?.rmse != null ? r.fitResult.rmse.toFixed(4) : "--" },
+  { key: "aicc",     label: "AICc",       fmt: r => r.fitResult?.aicc != null ? r.fitResult.aicc.toFixed(2) : "--" },
+  { key: "bic",      label: "BIC",        fmt: r => r.fitResult?.bic  != null ? r.fitResult.bic.toFixed(2)  : "--" },
+  { key: "ssr",      label: "SSR",        fmt: r => r.fitResult?.ssr  != null ? r.fitResult.ssr.toExponential(2)  : "--" },
+  { key: "model",    label: "Model",      fmt: r => r.modelType || "--" },
+  { key: "n",        label: "n",          fmt: r => r.fitResult?.n != null ? String(r.fitResult.n) : "--" },
+];
+const RB_DEFAULT_COLUMNS = ["name", "ec50", "hill", "r2"];
+
+// Compute fractional column widths for a given set of column keys.
+// "name" (first) gets a larger share; the rest split evenly.
+function rbColWidths(keys) {
+  const n = keys.length;
+  if (!n) return [];
+  const nameW = Math.max(0.18, 0.32 - Math.max(0, n - 3) * 0.018);
+  const restW  = n > 1 ? (1 - nameW) / (n - 1) : 0;
+  return keys.map((k, i) => (i === 0 && k === "name") ? nameW : restW);
+}
+
+function rbDrawStatsTableToCanvas(ctx, item) {
+  if (!item.data?.length) return;
+  const { x, y, width: w, height: h, data, title } = item;
+  const colKeys = item.columns?.length ? item.columns : RB_DEFAULT_COLUMNS;
+  const colDefs = colKeys.map(k => RB_STAT_COLUMNS.find(c => c.key === k)).filter(Boolean);
+  const widths  = rbColWidths(colDefs.map(c => c.key));
+  const colW    = widths.map(fw => fw * w);
+  const pad = 6, titleH = title ? 28 : 0, colHeaderH = 18;
+  const rowH = Math.min(20, (h - titleH - colHeaderH) / Math.max(data.length, 1));
+
+  ctx.fillStyle = "#f8fafd"; ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = "#c8d8ec"; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
+  if (title) {
+    ctx.fillStyle = "#1a3a6a"; ctx.fillRect(x, y, w, titleH);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 11px Arial, sans-serif";
+    ctx.textAlign = "left"; ctx.fillText(title, x + pad, y + titleH - 9);
+  }
+  let cy = y + titleH;
+  ctx.fillStyle = "rgba(40,80,140,0.1)"; ctx.fillRect(x, cy, w, colHeaderH);
+  let cx = x;
+  colDefs.forEach((col, ci) => {
+    ctx.fillStyle = "#1a3a6a"; ctx.font = "bold 9px Arial, sans-serif";
+    ctx.textAlign = ci === 0 ? "left" : "right";
+    ctx.fillText(col.label, ci === 0 ? cx + pad : cx + colW[ci] - pad, cy + colHeaderH - 5);
+    cx += colW[ci];
+  });
+  cy += colHeaderH;
+  data.forEach((r, i) => {
+    if (i % 2 === 0) { ctx.fillStyle = "rgba(200,220,240,0.18)"; ctx.fillRect(x, cy, w, rowH); }
+    cx = x;
+    colDefs.forEach((col, ci) => {
+      ctx.fillStyle = "#1a2a3a"; ctx.font = "9px Arial, sans-serif";
+      ctx.textAlign = ci === 0 ? "left" : "right";
+      ctx.fillText(col.fmt(r), ci === 0 ? cx + pad : cx + colW[ci] - pad, cy + rowH - 5);
+      cx += colW[ci];
+    });
+    ctx.strokeStyle = "rgba(100,140,180,0.1)"; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(x, cy + rowH); ctx.lineTo(x + w, cy + rowH); ctx.stroke();
+    cy += rowH;
+  });
+}
+
+// ── RBReportItem: one draggable/resizable element on the page ─────
+function RBReportItem({ item, isSelected, isEditing, onSelect, onStartEdit, onStopEdit, onChange, onStartDrag, getCompoundStyle }) {
+  const HANDLE_POS = {
+    nw: { top: -4, left: -4 },
+    n:  { top: -4, left: "50%", transform: "translateX(-50%)" },
+    ne: { top: -4, right: -4 },
+    e:  { top: "50%", right: -4, transform: "translateY(-50%)" },
+    se: { bottom: -4, right: -4 },
+    s:  { bottom: -4, left: "50%", transform: "translateX(-50%)" },
+    sw: { bottom: -4, left: -4 },
+    w:  { top: "50%", left: -4, transform: "translateY(-50%)" },
+  };
+  const CURSORS = { nw: "nw-resize", n: "n-resize", ne: "ne-resize", e: "e-resize", se: "se-resize", s: "s-resize", sw: "sw-resize", w: "w-resize" };
+
+  return (
+    <div
+      style={{ position: "absolute", left: item.x, top: item.y, width: item.width, height: item.height,
+        outline: isSelected ? "2px solid #3b9eff" : "1px dashed rgba(100,140,180,0.12)",
+        cursor: "move", boxSizing: "border-box", userSelect: "none" }}
+      onMouseDown={e => { if (!isEditing) { onSelect(); onStartDrag(e, item, null); } }}
+      onClick={e => { e.stopPropagation(); onSelect(); }}
+      onDoubleClick={e => { e.stopPropagation(); if (item.type === "text" || item.type === "heading") onStartEdit(); }}
+    >
+      <RBItemContent item={item} isEditing={isEditing} onChange={onChange} onStopEdit={onStopEdit} getCompoundStyle={getCompoundStyle} />
+      {isSelected && Object.entries(HANDLE_POS).map(([handle, pos]) => (
+        <div key={handle}
+          style={{ position: "absolute", ...pos, width: 8, height: 8, background: "#fff", border: "2px solid #3b9eff", borderRadius: 2, cursor: CURSORS[handle], zIndex: 10 }}
+          onMouseDown={e => { e.stopPropagation(); onStartDrag(e, item, handle); }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function RBItemContent({ item, isEditing, onChange, onStopEdit, getCompoundStyle }) {
+  switch (item.type) {
+    case "chart-image":
+    case "overlay-chart":
+      return (
+        <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {item.dataUrl
+            ? <img src={item.dataUrl} style={{ width: "100%", flex: 1, objectFit: "contain", display: "block", minHeight: 0 }} draggable={false} alt="" />
+            : <div style={{ flex: 1, background: "#eee", display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontSize: 12 }}>No chart</div>
+          }
+          {item.caption && <div style={{ fontSize: 10, color: "#666", textAlign: "center", fontStyle: "italic", padding: "2px 4px", flexShrink: 0 }}>{item.caption}</div>}
+        </div>
+      );
+
+    case "text":
+    case "heading":
+      if (isEditing) {
+        return (
+          <textarea autoFocus value={item.content || ""} onChange={e => onChange({ content: e.target.value })}
+            onBlur={onStopEdit} onKeyDown={e => { if (e.key === "Escape") onStopEdit(); e.stopPropagation(); }}
+            onClick={e => e.stopPropagation()}
+            style={{ width: "100%", height: "100%", resize: "none", border: "none", outline: "none",
+              fontSize: item.fontSize || 12, fontWeight: item.fontWeight || "normal",
+              fontStyle: item.fontStyle || "normal", color: item.color || "#1a2a40",
+              textAlign: item.align || "left", background: "rgba(230,240,255,0.92)",
+              padding: 4, boxSizing: "border-box", fontFamily: "Arial, sans-serif" }}
+          />
+        );
+      }
+      return (
+        <div style={{ width: "100%", height: "100%", overflow: "hidden",
+          fontSize: item.fontSize || 12, fontWeight: item.fontWeight || "normal",
+          fontStyle: item.fontStyle || "normal", color: item.color || "#1a2a40",
+          textAlign: item.align || "left", whiteSpace: "pre-wrap", wordBreak: "break-word",
+          padding: 4, fontFamily: "Arial, sans-serif", lineHeight: 1.4 }}>
+          {item.content || <span style={{ opacity: 0.3 }}>Double-click to edit</span>}
+        </div>
+      );
+
+    case "divider":
+      return (
+        <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center" }}>
+          <div style={{ width: "100%", height: item.thickness || 1, background: item.color || "#cccccc" }} />
+        </div>
+      );
+
+    case "fit-params":
+      return <RBDataTable rows={rbGetFitParamsRows(item.fitResult, item.modelType)} title={item.title} />;
+    case "gof-table":
+      return <RBDataTable rows={rbGetGoFRows(item.fitResult)} title={item.title} />;
+    case "stats-table":
+      return <RBStatsTable item={item} getCompoundStyle={getCompoundStyle} />;
+    default:
+      return <div style={{ width: "100%", height: "100%", background: "#eee", display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontSize: 11 }}>{item.type}</div>;
+  }
+}
+
+function RBDataTable({ rows, title }) {
+  return (
+    <div style={{ width: "100%", height: "100%", background: "#f8fafd", border: "1px solid #c8d8ec", overflow: "hidden", fontFamily: "Arial, sans-serif", boxSizing: "border-box" }}>
+      {title && <div style={{ background: "#1a3a6a", color: "#fff", padding: "5px 8px", fontSize: 11, fontWeight: "bold" }}>{title}</div>}
+      <div>
+        {rows.map(([label, val], i) => (
+          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "3px 8px", fontSize: 10,
+            background: i % 2 === 0 ? "rgba(200,220,240,0.18)" : "transparent", borderBottom: "1px solid rgba(100,140,180,0.1)" }}>
+            <span style={{ color: "#446688" }}>{label}</span>
+            <span style={{ color: "#1a2a3a", fontWeight: "bold", fontFamily: "monospace" }}>{val}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RBStatsTable({ item, getCompoundStyle }) {
+  const { data, title, columns } = item;
+  if (!data) return null;
+  const colKeys = columns?.length ? columns : RB_DEFAULT_COLUMNS;
+  const colDefs = colKeys.map(k => RB_STAT_COLUMNS.find(c => c.key === k)).filter(Boolean);
+  const widths  = rbColWidths(colDefs.map(c => c.key));
+  const gridCols = widths.map(w => `${(w * 100).toFixed(1)}%`).join(" ");
+
+  return (
+    <div style={{ width: "100%", height: "100%", background: "#f8fafd", border: "1px solid #c8d8ec", overflow: "hidden", fontFamily: "Arial, sans-serif", boxSizing: "border-box" }}>
+      {title && <div style={{ background: "#1a3a6a", color: "#fff", padding: "5px 8px", fontSize: 11, fontWeight: "bold" }}>{title}</div>}
+      {/* Column headers */}
+      <div style={{ display: "grid", gridTemplateColumns: gridCols, background: "rgba(40,80,140,0.08)", borderBottom: "1px solid rgba(100,140,180,0.15)" }}>
+        {colDefs.map((col, ci) => (
+          <span key={col.key} style={{ fontSize: 9, fontWeight: "bold", color: "#1a3a6a", padding: "3px 6px", textAlign: ci === 0 ? "left" : "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{col.label}</span>
+        ))}
+      </div>
+      {/* Data rows */}
+      {data.map((r, ri) => {
+        const cs = getCompoundStyle ? getCompoundStyle(r.name, ri) : { color: OVERLAY_COLORS[ri % OVERLAY_COLORS.length] };
+        return (
+          <div key={ri} style={{ display: "grid", gridTemplateColumns: gridCols,
+            background: ri % 2 === 0 ? "rgba(200,220,240,0.15)" : "transparent",
+            borderBottom: "1px solid rgba(100,140,180,0.08)" }}>
+            {colDefs.map((col, ci) => (
+              <span key={col.key} style={{ fontSize: 9, padding: "2px 6px", textAlign: ci === 0 ? "left" : "right", fontFamily: ci === 0 ? "inherit" : "monospace",
+                color: ci === 0 ? cs.color : "#1a2a3a",
+                fontWeight: ci === 0 ? "bold" : "normal",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {col.fmt(r)}
+              </span>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Properties Panel ──────────────────────────────────────────────
+function RBPropertiesPanel({ item, onChange, onDelete, onDuplicate }) {
+  const lbl = { fontSize: 9, color: "rgba(160,190,230,0.5)", display: "block", marginBottom: 2 };
+  const inp = { width: "100%", padding: "4px 6px", background: "#1a2035", border: "1px solid rgba(60,100,160,0.22)", borderRadius: 4, color: "#c8daf0", fontSize: 10, fontFamily: "'JetBrains Mono', monospace", outline: "none", boxSizing: "border-box" };
+  const sec = (label, children) => (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 9, fontWeight: 700, color: "#3b9eff", textTransform: "uppercase", letterSpacing: 1, marginBottom: 5, borderBottom: "1px solid rgba(59,158,255,0.1)", paddingBottom: 3 }}>{label}</div>
+      {children}
+    </div>
+  );
+
+  return (
+    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#c8daf0", textTransform: "uppercase", letterSpacing: 1 }}>Properties</span>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button onClick={onDuplicate} style={{ padding: "3px 7px", background: "rgba(59,158,255,0.1)", border: "1px solid rgba(59,158,255,0.25)", borderRadius: 3, color: "rgba(160,190,230,0.6)", fontSize: 9, cursor: "pointer", fontFamily: "'JetBrains Mono', monospace" }}>⧉</button>
+          <button onClick={onDelete} style={{ padding: "3px 7px", background: "rgba(255,80,80,0.1)", border: "1px solid rgba(255,80,80,0.25)", borderRadius: 3, color: "rgba(255,100,100,0.7)", fontSize: 11, cursor: "pointer", fontFamily: "'JetBrains Mono', monospace" }}>🗑</button>
+        </div>
+      </div>
+
+      {sec("Position & Size",
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          {[["X", "x"], ["Y", "y"], ["W", "width"], ["H", "height"]].map(([lb, key]) => (
+            <div key={key}>
+              <label style={lbl}>{lb}</label>
+              <input type="number" value={Math.round(item[key] ?? 0)} style={inp} onChange={e => onChange({ [key]: Number(e.target.value) })} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(item.type === "text" || item.type === "heading") && sec("Text", <>
+        <label style={lbl}>Content</label>
+        <textarea value={item.content || ""} style={{ ...inp, height: 60, resize: "vertical", marginBottom: 6 }} onChange={e => onChange({ content: e.target.value })} />
+        <label style={lbl}>Font size: {item.fontSize || 12}px</label>
+        <input type="range" min={7} max={60} value={item.fontSize || 12} onChange={e => onChange({ fontSize: Number(e.target.value) })} style={{ width: "100%", marginBottom: 4, accentColor: "#3b9eff" }} />
+        <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+          {[["B", "fontWeight", "bold", "normal"], ["I", "fontStyle", "italic", "normal"]].map(([icon, key, onVal, offVal]) => (
+            <button key={key} onClick={() => onChange({ [key]: item[key] === onVal ? offVal : onVal })}
+              style={{ flex: 1, padding: "4px 0", background: item[key] === onVal ? "rgba(59,158,255,0.25)" : "rgba(20,30,55,0.7)", border: "1px solid rgba(59,158,255,0.3)", borderRadius: 3, color: "#c8daf0", fontSize: 11, cursor: "pointer", fontStyle: key === "fontStyle" ? "italic" : "normal", fontWeight: key === "fontWeight" ? "bold" : "normal" }}>{icon}</button>
+          ))}
+          {["left", "center", "right"].map(a => (
+            <button key={a} onClick={() => onChange({ align: a })}
+              style={{ flex: 1, padding: "4px 0", background: item.align === a ? "rgba(59,158,255,0.25)" : "rgba(20,30,55,0.7)", border: "1px solid rgba(59,158,255,0.3)", borderRadius: 3, color: "#c8daf0", fontSize: 9, cursor: "pointer" }}>
+              {a === "left" ? "⬅" : a === "center" ? "⬆" : "➡"}
+            </button>
+          ))}
+        </div>
+        <label style={lbl}>Color</label>
+        <input type="color" value={item.color || "#1a2a40"} onChange={e => onChange({ color: e.target.value })} style={{ width: "100%", height: 28, border: "none", background: "transparent", cursor: "pointer" }} />
+      </>)}
+
+      {(item.type === "chart-image" || item.type === "overlay-chart") && sec("Caption", <>
+        <textarea value={item.caption || ""} placeholder="Optional caption…" style={{ ...inp, height: 48, resize: "vertical" }} onChange={e => onChange({ caption: e.target.value })} />
+      </>)}
+
+      {(item.type === "fit-params" || item.type === "gof-table") && sec("Table", <>
+        <label style={lbl}>Title</label>
+        <input type="text" value={item.title || ""} style={inp} onChange={e => onChange({ title: e.target.value })} />
+      </>)}
+
+      {item.type === "stats-table" && sec("Compound Table", (() => {
+        const colKeys = item.columns?.length ? item.columns : RB_DEFAULT_COLUMNS;
+        const usedKeys = new Set(colKeys);
+        const available = RB_STAT_COLUMNS.filter(c => !usedKeys.has(c.key));
+
+        const moveCol = (idx, dir) => {
+          const next = [...colKeys];
+          const swapIdx = idx + dir;
+          if (swapIdx < 0 || swapIdx >= next.length) return;
+          [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+          onChange({ columns: next });
+        };
+        const removeCol = (key) => {
+          if (key === "name") return; // name is mandatory
+          onChange({ columns: colKeys.filter(k => k !== key) });
+        };
+        const addCol = (key) => {
+          if (!key || usedKeys.has(key)) return;
+          onChange({ columns: [...colKeys, key] });
+        };
+
+        const rowSt = { display: "flex", alignItems: "center", gap: 4, marginBottom: 3, padding: "3px 5px", background: "rgba(20,30,60,0.5)", border: "1px solid rgba(60,100,160,0.15)", borderRadius: 3 };
+        const iconBtn = (label, onClick, disabled, color = "rgba(160,190,230,0.5)") => (
+          <button onClick={onClick} disabled={disabled} style={{ padding: "1px 5px", background: "none", border: "none", color: disabled ? "rgba(80,100,140,0.3)" : color, fontSize: 11, cursor: disabled ? "default" : "pointer", lineHeight: 1 }}>{label}</button>
+        );
+
+        return <>
+          <label style={lbl}>Title</label>
+          <input type="text" value={item.title || ""} style={{ ...inp, marginBottom: 8 }} onChange={e => onChange({ title: e.target.value })} />
+
+          <label style={{ ...lbl, marginBottom: 4 }}>Columns (drag to reorder)</label>
+          {colKeys.map((key, idx) => {
+            const def = RB_STAT_COLUMNS.find(c => c.key === key);
+            if (!def) return null;
+            return (
+              <div key={key} style={rowSt}>
+                <span style={{ flex: 1, fontSize: 9, color: "#c8daf0" }}>{def.label}</span>
+                {iconBtn("↑", () => moveCol(idx, -1), idx === 0)}
+                {iconBtn("↓", () => moveCol(idx,  1), idx === colKeys.length - 1)}
+                {iconBtn("🗑", () => removeCol(key), key === "name", "rgba(255,100,100,0.6)")}
+              </div>
+            );
+          })}
+
+          {available.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <label style={lbl}>Add column</label>
+              <select defaultValue="" onChange={e => { addCol(e.target.value); e.target.value = ""; }}
+                style={{ ...inp, padding: "3px 5px" }}>
+                <option value="">— select —</option>
+                {available.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+              </select>
+            </div>
+          )}
+        </>;
+      })())}
+
+      {item.type === "divider" && sec("Divider", <>
+        <label style={lbl}>Color</label>
+        <input type="color" value={item.color || "#cccccc"} onChange={e => onChange({ color: e.target.value })} style={{ width: "100%", height: 28, border: "none", background: "transparent", cursor: "pointer", marginBottom: 6 }} />
+        <label style={lbl}>Thickness: {item.thickness || 1}px</label>
+        <input type="range" min={1} max={8} value={item.thickness || 1} onChange={e => onChange({ thickness: Number(e.target.value) })} style={{ width: "100%", accentColor: "#3b9eff" }} />
+      </>)}
+    </div>
+  );
+}
+
+// ── Main ReportBuilder component ──────────────────────────────────
+function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, activeModel, allFitResults, getCompoundStyle }) {
+  const idRef = useRef(1000);
+  const genId = () => `rb-${idRef.current++}`;
+
+  const [pageKey, setPageKey] = useState("letter");
+  const page = RB_PAGE_SIZES[pageKey];
+  const [zoom, setZoom] = useState(0.72);
+  const [exporting, setExporting] = useState(false);
+  const [selectedId, setSelectedId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+
+  // Build default layout when component first mounts
+  const [items, setItems] = useState(() => {
+    const id = () => `rb-${idRef.current++}`;
+    const init = [];
+    const pw = RB_PAGE_SIZES.letter.w;
+    const now = new Date().toLocaleDateString();
+    init.push({ id: id(), type: "text", x: 40, y: 28, width: pw - 80, height: 44, content: "Bioassay Report", fontSize: 22, fontWeight: "bold", fontStyle: "normal", color: "#0a1a3a", align: "left" });
+    init.push({ id: id(), type: "text", x: 40, y: 74, width: pw - 80, height: 20, content: `Generated: ${now}  |  Model: ${activeModel || "N/A"}`, fontSize: 10, fontWeight: "normal", fontStyle: "italic", color: "#667788", align: "left" });
+    init.push({ id: id(), type: "divider", x: 40, y: 100, width: pw - 80, height: 6, color: "#2a4a8a", thickness: 1 });
+    if (chartDataUrl) {
+      init.push({ id: id(), type: "chart-image", x: 40, y: 114, width: 478, height: 320, dataUrl: chartDataUrl, caption: "" });
+    }
+    if (fitResult && activeModel) {
+      const nRows = activeModel === "5PL" ? 6 : 5;
+      init.push({ id: id(), type: "fit-params", x: 538, y: 114, width: 238, height: nRows * 24 + 36, fitResult, modelType: activeModel, title: `${activeModel} Parameters` });
+      init.push({ id: id(), type: "gof-table", x: 538, y: 114 + nRows * 24 + 44, width: 238, height: 196, fitResult, modelType: activeModel, title: "Goodness of Fit" });
+    }
+    if (allFitResults?.length > 0) {
+      const tableY = chartDataUrl ? 448 : 114;
+      init.push({ id: id(), type: "stats-table", x: 40, y: tableY, width: pw - 80, height: Math.min(320, 46 + allFitResults.length * 22), data: allFitResults, title: "Compound Summary", columns: [...RB_DEFAULT_COLUMNS] });
+    }
+    return init;
+  });
+
+  const updateItem = useCallback((id, changes) =>
+    setItems(prev => prev.map(it => it.id === id ? { ...it, ...changes } : it)), []);
+
+  const deleteItem = useCallback((id) => {
+    setItems(prev => prev.filter(it => it.id !== id));
+    setSelectedId(s => s === id ? null : s);
+  }, []);
+
+  const duplicateItem = useCallback((id) => {
+    setItems(prev => {
+      const orig = prev.find(it => it.id === id);
+      if (!orig) return prev;
+      return [...prev, { ...orig, id: genId(), x: orig.x + 20, y: orig.y + 20 }];
+    });
+  }, []);
+
+  const addItem = useCallback((type) => {
+    const newId = genId();
+    const pw = page.w;
+    const baseDefaults = {
+      "chart-image":    { x: 40, y: 40, width: 480, height: 320, dataUrl: chartDataUrl, caption: "" },
+      "overlay-chart":  { x: 40, y: 40, width: 480, height: 320, dataUrl: overlayChartDataUrl, caption: "" },
+      "text":           { x: 40, y: 40, width: 320, height: 80,  content: "New text block", fontSize: 12, fontWeight: "normal", fontStyle: "normal", color: "#1a2a40", align: "left" },
+      "heading":        { x: 40, y: 40, width: 420, height: 50,  content: "Section Heading", fontSize: 18, fontWeight: "bold",   fontStyle: "normal", color: "#0a1a3a", align: "left" },
+      "fit-params":     { x: 40, y: 40, width: 260, height: 180, fitResult, modelType: activeModel, title: `${activeModel || "Fit"} Parameters` },
+      "gof-table":      { x: 40, y: 40, width: 260, height: 210, fitResult, modelType: activeModel, title: "Goodness of Fit" },
+      "stats-table":    { x: 40, y: 40, width: pw - 80, height: 200, data: allFitResults, title: "Compound Summary", columns: [...RB_DEFAULT_COLUMNS] },
+      "divider":        { x: 40, y: 200, width: pw - 80, height: 6, color: "#cccccc", thickness: 1 },
+    };
+    setItems(prev => [...prev, { id: newId, type, ...baseDefaults[type] }]);
+    setSelectedId(newId);
+  }, [chartDataUrl, overlayChartDataUrl, fitResult, activeModel, allFitResults, page.w]);
+
+  // Drag & resize via mouse events
+  const dragRef = useRef({ active: false, type: null, itemId: null, startX: 0, startY: 0, origX: 0, origY: 0, origW: 0, origH: 0, handle: "" });
+
+  const startDrag = useCallback((e, item, handle) => {
+    if (editingId) return;
+    e.stopPropagation(); e.preventDefault();
+    setSelectedId(item.id);
+    dragRef.current = { active: true, type: handle ? "resize" : "move", itemId: item.id, handle: handle || "",
+      startX: e.clientX, startY: e.clientY, origX: item.x, origY: item.y, origW: item.width, origH: item.height };
+  }, [editingId]);
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = dragRef.current;
+      if (!d.active) return;
+      const dx = (e.clientX - d.startX) / zoom;
+      const dy = (e.clientY - d.startY) / zoom;
+      if (d.type === "move") {
+        updateItem(d.itemId, { x: Math.max(0, d.origX + dx), y: Math.max(0, d.origY + dy) });
+      } else {
+        let nx = d.origX, ny = d.origY, nw = d.origW, nh = d.origH;
+        const minW = 50, minH = 20;
+        if (d.handle.includes("e")) nw = Math.max(minW, d.origW + dx);
+        if (d.handle.includes("s")) nh = Math.max(minH, d.origH + dy);
+        if (d.handle.includes("w")) { nw = Math.max(minW, d.origW - dx); nx = d.origX + d.origW - nw; }
+        if (d.handle.includes("n")) { nh = Math.max(minH, d.origH - dy); ny = d.origY + d.origH - nh; }
+        updateItem(d.itemId, { x: nx, y: ny, width: nw, height: nh });
+      }
+    };
+    const onUp = () => { dragRef.current.active = false; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, [zoom, updateItem]);
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (editingId) return;
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedId && !["INPUT","TEXTAREA","SELECT"].includes(document.activeElement?.tagName)) {
+        deleteItem(selectedId);
+      }
+      if (e.key === "Escape") { setSelectedId(null); setEditingId(null); }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedId, editingId, deleteItem]);
+
+  // Build offscreen canvas from all items for export
+  const buildExportCanvas = async () => {
+    const scale = 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = page.w * scale;
+    canvas.height = page.h * scale;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(scale, scale);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, page.w, page.h);
+    await rbDrawItemsToCanvas(ctx, items, page);
+    return canvas;
+  };
+
+  const exportPNG = async () => {
+    setExporting(true); setSelectedId(null); setEditingId(null);
+    await new Promise(r => setTimeout(r, 80));
+    try {
+      const canvas = await buildExportCanvas();
+      const a = document.createElement("a");
+      a.href = canvas.toDataURL("image/png"); a.download = "bioassay_report.png"; a.click();
+    } finally { setExporting(false); }
+  };
+
+  const exportPDF = async () => {
+    setExporting(true); setSelectedId(null); setEditingId(null);
+    await new Promise(r => setTimeout(r, 80));
+    try {
+      const canvas = await buildExportCanvas();
+      const { jsPDF } = await import("jspdf");
+      const doc = new jsPDF({ orientation: "portrait", unit: "px", format: [page.w, page.h] });
+      doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, page.w, page.h);
+      doc.save("bioassay_report.pdf");
+    } finally { setExporting(false); }
+  };
+
+  const selectedItem = items.find(it => it.id === selectedId);
+
+  const tbStyle = (bg, bc) => ({
+    padding: "4px 10px", background: bg, border: `1px solid ${bc}`, borderRadius: 4,
+    color: "rgba(200,220,255,0.8)", fontSize: 10, cursor: "pointer",
+    fontFamily: "'JetBrains Mono', monospace", whiteSpace: "nowrap",
+  });
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#12172a", zIndex: 2000, display: "flex", flexDirection: "column", fontFamily: "'JetBrains Mono', monospace" }}>
+
+      {/* ── Toolbar ── */}
+      <div style={{ height: 46, background: "#080c18", borderBottom: "1px solid rgba(60,100,160,0.25)", display: "flex", alignItems: "center", gap: 5, padding: "0 12px", flexShrink: 0, overflowX: "auto" }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#3b9eff", marginRight: 6, whiteSpace: "nowrap" }}>Report Builder</span>
+        <div style={{ width: 1, height: 24, background: "rgba(60,100,160,0.3)", flexShrink: 0 }} />
+
+        {/* Add-item buttons */}
+        {[
+          ["text",         "+ Text"],
+          ["heading",      "+ Heading"],
+          chartDataUrl                                                  && ["chart-image",   "+ Chart"],
+          overlayChartDataUrl && overlayChartDataUrl !== chartDataUrl   && ["overlay-chart", "+ Overlay"],
+          fitResult                                                     && ["fit-params",    "+ Fit Params"],
+          fitResult                                                     && ["gof-table",     "+ GoF Stats"],
+          allFitResults?.length > 0                                     && ["stats-table",   "+ Compound Table"],
+          ["divider", "+ Divider"],
+        ].filter(Boolean).map(([type, label]) => (
+          <button key={type} onClick={() => addItem(type)} style={tbStyle("rgba(25,38,72,0.8)", "rgba(60,100,160,0.3)")}>{label}</button>
+        ))}
+
+        <div style={{ width: 1, height: 24, background: "rgba(60,100,160,0.3)", flexShrink: 0, margin: "0 2px" }} />
+
+        {/* Page size & zoom */}
+        <select value={pageKey} onChange={e => setPageKey(e.target.value)} style={{ ...tbStyle("rgba(8,12,24,0.9)", "rgba(60,100,160,0.25)"), padding: "3px 6px" }}>
+          <option value="letter">Letter</option>
+          <option value="a4">A4</option>
+        </select>
+        <select value={zoom} onChange={e => setZoom(Number(e.target.value))} style={{ ...tbStyle("rgba(8,12,24,0.9)", "rgba(60,100,160,0.25)"), padding: "3px 6px" }}>
+          {[0.5, 0.6, 0.72, 0.85, 1.0, 1.25].map(z => <option key={z} value={z}>{Math.round(z * 100)}%</option>)}
+        </select>
+
+        {selectedId && <>
+          <div style={{ width: 1, height: 24, background: "rgba(60,100,160,0.3)", flexShrink: 0, margin: "0 2px" }} />
+          <button onClick={() => deleteItem(selectedId)} style={tbStyle("rgba(255,70,70,0.1)", "rgba(255,70,70,0.3)")}>🗑 Delete</button>
+          <button onClick={() => duplicateItem(selectedId)} style={tbStyle("rgba(59,158,255,0.1)", "rgba(59,158,255,0.3)")}>⧉ Duplicate</button>
+        </>}
+
+        <div style={{ flex: 1 }} />
+        <button onClick={exportPNG} disabled={exporting} style={tbStyle("rgba(0,230,180,0.12)", "rgba(0,230,180,0.4)")}>{exporting ? "Exporting…" : "↓ PNG"}</button>
+        <button onClick={exportPDF} disabled={exporting} style={tbStyle("rgba(59,158,255,0.12)", "rgba(59,158,255,0.4)")}>{exporting ? "Exporting…" : "↓ PDF"}</button>
+        <button onClick={onClose} style={tbStyle("rgba(50,65,110,0.4)", "rgba(100,130,180,0.3)")}>✕ Close</button>
+      </div>
+
+      {/* ── Body: page canvas + optional properties panel ── */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+
+        {/* Scrollable page area */}
+        <div style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 32, background: "#191e2e" }}
+          onClick={() => { setSelectedId(null); setEditingId(null); }}>
+
+          {/* White "paper" container — sized to zoom level */}
+          <div style={{ width: page.w * zoom, height: page.h * zoom, background: "white", position: "relative", flexShrink: 0, boxShadow: "0 8px 48px rgba(0,0,0,0.6)" }}
+            onClick={e => e.stopPropagation()}>
+            {/* Inner page at natural scale, scaled via CSS transform */}
+            <div style={{ width: page.w, height: page.h, position: "absolute", top: 0, left: 0, transform: `scale(${zoom})`, transformOrigin: "top left" }}>
+              {items.map(item => (
+                <RBReportItem
+                  key={item.id}
+                  item={item}
+                  isSelected={selectedId === item.id}
+                  isEditing={editingId === item.id}
+                  onSelect={() => setSelectedId(item.id)}
+                  onStartEdit={() => setEditingId(item.id)}
+                  onStopEdit={() => setEditingId(null)}
+                  onChange={changes => updateItem(item.id, changes)}
+                  onStartDrag={startDrag}
+                  getCompoundStyle={getCompoundStyle}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Properties panel */}
+        {selectedItem && (
+          <div style={{ width: 218, background: "#080c18", borderLeft: "1px solid rgba(60,100,160,0.2)", padding: 12, overflowY: "auto", flexShrink: 0 }}>
+            <RBPropertiesPanel
+              item={selectedItem}
+              onChange={changes => updateItem(selectedItem.id, changes)}
+              onDelete={() => deleteItem(selectedItem.id)}
+              onDuplicate={() => duplicateItem(selectedItem.id)}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Exporting overlay */}
+      {exporting && (
+        <div style={{ position: "absolute", inset: 0, background: "rgba(8,12,24,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10 }}>
+          <span style={{ color: "#00e6b4", fontSize: 14, fontFamily: "'JetBrains Mono', monospace" }}>Rendering export…</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Component ────────────────────────────────────────────────
 export default function BioassayCurveFitter() {
   const [rawData, setRawData] = useState(SAMPLE_DATA);
@@ -1248,6 +1983,8 @@ export default function BioassayCurveFitter() {
   const [fixedMax, setFixedMax] = useState("");
   const [fixedHill, setFixedHill] = useState("1");
   const [showPdfModal, setShowPdfModal] = useState(false);
+  const [showReportBuilder, setShowReportBuilder] = useState(false);
+  const [rbChartUrl, setRbChartUrl] = useState(null);
   const [pdfSections, setPdfSections] = useState({
     modelInfo: true,
     modelParams: true,
@@ -3379,6 +4116,28 @@ export default function BioassayCurveFitter() {
                 >
                   PDF Report
                 </button>
+                <button
+                  onClick={() => {
+                    const url = mainCanvasRef.current ? mainCanvasRef.current.toDataURL("image/png") : null;
+                    setRbChartUrl(url);
+                    setShowReportBuilder(true);
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: "8px 0",
+                    background: "rgba(59,158,255,0.08)",
+                    border: `1px solid rgba(59,158,255,0.25)`,
+                    borderRadius: 4,
+                    color: t.blue,
+                    fontSize: 9,
+                    cursor: "pointer",
+                    fontFamily: "'JetBrains Mono', monospace",
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  Builder
+                </button>
               </div>
             </div>
           )}
@@ -4367,6 +5126,19 @@ export default function BioassayCurveFitter() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Report Builder */}
+      {showReportBuilder && (
+        <ReportBuilder
+          onClose={() => setShowReportBuilder(false)}
+          chartDataUrl={rbChartUrl}
+          overlayChartDataUrl={overlayMode && rbChartUrl ? rbChartUrl : null}
+          fitResult={fitResult}
+          activeModel={activeModel}
+          allFitResults={allFitResults}
+          getCompoundStyle={getCompoundStyle}
+        />
       )}
     </div>
   );
