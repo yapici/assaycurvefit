@@ -614,6 +614,319 @@ function drawPoint(ctx, cx, cy, r, shape) {
   ctx.fill();
 }
 
+// ── Resizable graph popup ─────────────────────────────────────────
+function GraphPopup({
+  onClose, parsedData, fitResult, activeModel, overlayMode, allFitResults,
+  selectedCompounds, getCompoundStyle, overlayEditIndex, loadCompoundForOverlayEdit,
+  chartOutlierIndices, excludedIndices,
+  pointView, setPointView, errorBarType, setErrorBarType,
+  xAxisLog, setXAxisLog, yAxisFormat, setYAxisFormat, yAxisDecimals, setYAxisDecimals,
+  axisXMin, setAxisXMin, axisXMax, setAxisXMax, axisYMin, setAxisYMin, axisYMax, setAxisYMax,
+  statsTableVisible, setStatsTableVisible, statsTablePos, setStatsTablePos,
+  theme: t,
+}) {
+  const canvasRef = useRef(null);
+  const containerRef = useRef(null);
+  const [pos, setPos] = useState({ x: Math.max(40, (window.innerWidth - 820) / 2), y: 40 });
+  const dragState = useRef(null);
+  const popupStatsDragRef = useRef({ dragging: false, startX: 0, startY: 0, startPosX: 0, startPosY: 0 });
+
+  // Track popup stats drag via window events
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = popupStatsDragRef.current;
+      if (!d.dragging) return;
+      setStatsTablePos({ x: d.startPosX + (e.clientX - d.startX), y: d.startPosY + (e.clientY - d.startY) });
+    };
+    const onUp = () => { popupStatsDragRef.current.dragging = false; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, [setStatsTablePos]);
+
+  const ao = {
+    xMin: axisXMin !== "" ? parseFloat(axisXMin) : null,
+    xMax: axisXMax !== "" ? parseFloat(axisXMax) : null,
+    yMin: axisYMin !== "" ? parseFloat(axisYMin) : null,
+    yMax: axisYMax !== "" ? parseFloat(axisYMax) : null,
+  };
+
+  const redraw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (overlayMode && allFitResults?.length > 0) {
+      drawOverlayChart(
+        canvas,
+        allFitResults.map((r, i) => ({ ...r, ...getCompoundStyle(r.name, i) }))
+                     .filter(r => !selectedCompounds || selectedCompounds.has(r.name)),
+        { pointView, errorBarType, axisOverride: ao, yAxisFormat, yAxisDecimals, xAxisLog },
+        t
+      );
+    } else if (parsedData) {
+      drawChart(canvas, parsedData.xData, parsedData.yData, fitResult, activeModel,
+        { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices,
+          axisOverride: ao, yAxisFormat, yAxisDecimals, xAxisLog },
+        t
+      );
+    }
+  }, [parsedData, fitResult, activeModel, overlayMode, allFitResults, selectedCompounds,
+      getCompoundStyle, pointView, errorBarType, chartOutlierIndices, excludedIndices,
+      axisXMin, axisXMax, axisYMin, axisYMax, yAxisFormat, yAxisDecimals, xAxisLog, t]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { redraw(); }, [redraw]);
+
+  useEffect(() => {
+    const ro = new ResizeObserver(redraw);
+    if (containerRef.current) ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, [redraw]);
+
+  const startDrag = (e) => {
+    if (e.button !== 0) return;
+    dragState.current = { startX: e.clientX - pos.x, startY: e.clientY - pos.y };
+    const onMove = (e) => {
+      if (!dragState.current) return;
+      setPos({ x: e.clientX - dragState.current.startX, y: e.clientY - dragState.current.startY });
+    };
+    const onUp = () => {
+      dragState.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    e.preventDefault();
+  };
+
+  const exportCanvas = (format) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
+    const quality = format === "jpeg" ? 0.95 : undefined;
+    // Always composite into an offscreen canvas so we can draw the stats table on top
+    const out = document.createElement("canvas");
+    out.width = canvas.width; out.height = canvas.height;
+    const ctx = out.getContext("2d");
+    if (format === "jpeg") {
+      ctx.fillStyle = t.canvas || "#0a0f1a";
+      ctx.fillRect(0, 0, out.width, out.height);
+    }
+    ctx.drawImage(canvas, 0, 0);
+    // Draw molecule stats table on top if visible
+    if (overlayMode && statsTableVisible && allFitResults?.length > 0) {
+      const dpr = canvas.width / canvas.getBoundingClientRect().width;
+      drawStatsTableOnCanvas(ctx, statsTablePos, allFitResults, selectedCompounds, overlayEditIndex, getCompoundStyle, dpr);
+    }
+    const a = document.createElement("a");
+    a.href = out.toDataURL(mimeType, quality);
+    a.download = `chart_export.${format}`;
+    a.click();
+  };
+
+  const hdrBtn = {
+    padding: "3px 9px", background: "rgba(59,158,255,0.12)", border: "1px solid rgba(59,158,255,0.3)",
+    borderRadius: 4, color: t.blue || "#3b9eff", fontSize: 9, cursor: "pointer",
+    fontFamily: "'JetBrains Mono', monospace", letterSpacing: 0.5,
+  };
+  const ctrlBtn = (active, activeColor) => ({
+    padding: "2px 7px", background: active ? `${activeColor}18` : (t.btnInactive || "rgba(30,40,60,0.8)"),
+    border: `1px solid ${active ? `${activeColor}55` : (t.panelBorder || "rgba(60,100,160,0.15)")}`,
+    borderRadius: 4, color: active ? activeColor : (t.textMuted || "rgba(160,190,230,0.45)"),
+    fontSize: 9, cursor: "pointer", fontFamily: "'JetBrains Mono', monospace",
+  });
+  const inputStyle = {
+    width: 54, padding: "2px 4px",
+    background: t.input || "rgba(10,15,26,0.6)", border: `1px solid ${t.inputBorder || "rgba(60,100,160,0.2)"}`,
+    borderRadius: 4, color: t.text || "#c8dcf0", fontSize: 9,
+    fontFamily: "'JetBrains Mono', monospace", outline: "none",
+  };
+  const teal = t.teal || "#00e6b4";
+  const hasAxisOverride = axisXMin || axisXMax || axisYMin || axisYMax;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 1100, pointerEvents: "none" }}>
+      <div style={{
+        position: "absolute", left: pos.x, top: pos.y,
+        background: t.panel, border: `1px solid ${t.panelBorder}`,
+        borderRadius: 10, boxShadow: "0 12px 48px rgba(0,0,0,0.7)",
+        pointerEvents: "all", display: "flex", flexDirection: "column",
+        minWidth: 380, minHeight: 300,
+      }}>
+        {/* Drag header */}
+        <div
+          onMouseDown={startDrag}
+          style={{
+            cursor: "move", padding: "7px 12px", userSelect: "none",
+            borderBottom: `1px solid ${t.panelBorder}`,
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexShrink: 0,
+          }}
+        >
+          <span style={{ fontSize: 11, fontWeight: 700, color: t.label, fontFamily: "'Space Grotesk', sans-serif" }}>
+            Graph Preview
+          </span>
+          <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+            {["PNG", "JPEG"].map(fmt => (
+              <button key={fmt} onClick={() => exportCanvas(fmt.toLowerCase())} style={hdrBtn}>
+                ↓ {fmt}
+              </button>
+            ))}
+            <button onClick={onClose} style={{ ...hdrBtn, background: "none", border: "none", color: "rgba(160,190,230,0.5)", fontSize: 14, padding: "0 4px" }}>
+              ✕
+            </button>
+          </div>
+        </div>
+
+        {/* Controls toolbar */}
+        <div style={{
+          padding: "6px 10px", borderBottom: `1px solid ${t.panelBorder}`,
+          display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", flexShrink: 0,
+          background: "rgba(0,0,0,0.15)",
+        }}>
+          {/* Log/Linear X */}
+          <button onClick={() => setXAxisLog(v => !v)} style={ctrlBtn(xAxisLog, teal)}>
+            {xAxisLog ? "Log X" : "Linear X"}
+          </button>
+
+          {/* X range */}
+          <span style={{ fontSize: 9, color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>X:</span>
+          <input type="number" value={axisXMin} placeholder="auto" onChange={e => setAxisXMin(e.target.value)} style={inputStyle} />
+          <input type="number" value={axisXMax} placeholder="auto" onChange={e => setAxisXMax(e.target.value)} style={inputStyle} />
+
+          {/* Y range */}
+          <span style={{ fontSize: 9, color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>Y:</span>
+          <input type="number" value={axisYMin} placeholder="auto" onChange={e => setAxisYMin(e.target.value)} style={{ ...inputStyle, width: 62 }} />
+          <input type="number" value={axisYMax} placeholder="auto" onChange={e => setAxisYMax(e.target.value)} style={{ ...inputStyle, width: 62 }} />
+
+          {/* Auto reset */}
+          {hasAxisOverride && (
+            <button onClick={() => { setAxisXMin(""); setAxisXMax(""); setAxisYMin(""); setAxisYMax(""); }} style={ctrlBtn(false, teal)}>
+              ↺ Auto
+            </button>
+          )}
+
+          {/* Y format */}
+          <span style={{ fontSize: 9, color: t.textMuted, fontFamily: "'JetBrains Mono', monospace", marginLeft: 4 }}>Y:</span>
+          <button onClick={() => setYAxisFormat(f => f === "decimal" ? "scientific" : "decimal")} style={ctrlBtn(yAxisFormat === "scientific", teal)}>
+            {yAxisFormat === "scientific" ? "Sci" : "Dec"}
+          </button>
+          <button onClick={() => setYAxisDecimals(d => Math.max(0, d - 1))} disabled={yAxisDecimals <= 0} style={ctrlBtn(false, teal)}>−</button>
+          <span style={{ fontSize: 9, color: t.text, fontFamily: "'JetBrains Mono', monospace", minWidth: 10, textAlign: "center" }}>{yAxisDecimals}</span>
+          <button onClick={() => setYAxisDecimals(d => Math.min(6, d + 1))} disabled={yAxisDecimals >= 6} style={ctrlBtn(false, teal)}>+</button>
+
+          {/* Point view */}
+          <span style={{ fontSize: 9, color: t.textMuted, fontFamily: "'JetBrains Mono', monospace", marginLeft: 4 }}>Pts:</span>
+          {[{ key: "individual", label: "Indiv" }, { key: "errorbars", label: "±Err" }].map(opt => (
+            <button key={opt.key} onClick={() => setPointView(opt.key)} style={ctrlBtn(pointView === opt.key, teal)}>
+              {opt.label}
+            </button>
+          ))}
+          {pointView === "errorbars" && (
+            <>
+              {[{ key: "sd", label: "SD" }, { key: "sem", label: "SEM" }].map(opt => (
+                <button key={opt.key} onClick={() => setErrorBarType(opt.key)} style={ctrlBtn(errorBarType === opt.key, "#ffb432")}>
+                  ±{opt.label}
+                </button>
+              ))}
+            </>
+          )}
+
+          {/* Stats table toggle (overlay only) */}
+          {overlayMode && allFitResults?.length > 0 && (
+            <button onClick={() => setStatsTableVisible(v => !v)} style={ctrlBtn(statsTableVisible, teal)}>
+              {statsTableVisible ? "Hide Stats" : "Stats"}
+            </button>
+          )}
+        </div>
+
+        {/* Resizable canvas area */}
+        <div
+          ref={containerRef}
+          style={{ resize: "both", overflow: "hidden", width: 760, height: 480, minWidth: 320, minHeight: 200, flexShrink: 0, position: "relative" }}
+        >
+          <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+
+          {/* Floating molecule stats table inside popup */}
+          {overlayMode && allFitResults && statsTableVisible && (
+            <div style={{
+              position: "absolute",
+              left: statsTablePos.x,
+              top: statsTablePos.y,
+              background: "rgba(10,15,26,0.88)",
+              border: "1px solid rgba(140,170,210,0.2)",
+              borderRadius: 8,
+              zIndex: 20,
+              minWidth: 260,
+              backdropFilter: "blur(8px)",
+              userSelect: "none",
+              fontFamily: "'JetBrains Mono', monospace",
+            }}>
+              <div
+                onMouseDown={e => {
+                  popupStatsDragRef.current = { dragging: true, startX: e.clientX, startY: e.clientY, startPosX: statsTablePos.x, startPosY: statsTablePos.y };
+                  e.preventDefault();
+                }}
+                style={{
+                  cursor: "grab", padding: "5px 10px",
+                  borderBottom: "1px solid rgba(140,170,210,0.12)",
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                }}
+              >
+                <span style={{ fontSize: 9, fontWeight: 700, color: teal, letterSpacing: 1 }}>MOLECULE STATS</span>
+                <button
+                  onClick={() => setStatsTableVisible(false)}
+                  style={{ background: "none", border: "none", color: "rgba(160,190,230,0.5)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px" }}
+                >×</button>
+              </div>
+              <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse", padding: "4px 0" }}>
+                <thead>
+                  <tr style={{ color: "rgba(160,190,230,0.45)", textAlign: "left" }}>
+                    {["Molecule", "EC50", "Hill", "R²", "Model"].map(h => (
+                      <th key={h} style={{ padding: "4px 8px", fontWeight: 600 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {allFitResults.map((r, i) => ({ r, i })).filter(({ r }) => !selectedCompounds || selectedCompounds.has(r.name)).map(({ r, i }) => {
+                    const s = getCompoundStyle(r.name, i);
+                    const p = r.fitResult?.params;
+                    const ec50 = p?.[2];
+                    const hill = p?.[1];
+                    const r2val = r.fitResult?.r2;
+                    return (
+                      <tr
+                        key={r.name}
+                        onClick={() => loadCompoundForOverlayEdit && loadCompoundForOverlayEdit(i)}
+                        style={{
+                          borderTop: "1px solid rgba(140,170,210,0.07)",
+                          cursor: "pointer",
+                          background: overlayEditIndex === i ? "rgba(255,255,255,0.06)" : "transparent",
+                        }}
+                      >
+                        <td style={{ padding: "3px 8px" }}>
+                          <span style={{ color: s.color }}>●</span>{" "}
+                          <span style={{ color: "rgba(200,220,250,0.8)" }}>{r.name.length > 12 ? r.name.slice(0, 11) + "…" : r.name}</span>
+                        </td>
+                        <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{ec50 > 0 ? ec50.toExponential(2) : "—"}</td>
+                        <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{hill != null ? hill.toFixed(2) : "—"}</td>
+                        <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{r2val != null ? r2val.toFixed(3) : "—"}</td>
+                        <td style={{ padding: "3px 8px", color: "rgba(160,190,230,0.4)" }}>{r.modelType || "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div style={{ padding: "4px 10px", fontSize: 8, color: "rgba(140,170,210,0.35)", fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>
+          Drag corner to resize · export captures current size
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Molecule stats table canvas renderer (used for PNG/JPEG export) ───
 function drawStatsTableOnCanvas(ctx, tablePos, allFitResults, selectedCompounds, overlayEditIndex, getCompoundStyle, dpr) {
   const s = dpr;
@@ -2142,6 +2455,7 @@ export default function BioassayCurveFitter() {
   const [fixedHill, setFixedHill] = useState("1");
   const [showPdfModal, setShowPdfModal] = useState(false);
   const [showReportBuilder, setShowReportBuilder] = useState(false);
+  const [showGraphPopup, setShowGraphPopup] = useState(false);
   const [rbChartUrl, setRbChartUrl] = useState(null);
   const [pdfSections, setPdfSections] = useState({
     modelInfo: true,
@@ -4672,7 +4986,23 @@ export default function BioassayCurveFitter() {
                 )}
               </div>
               {fitResult && (
-                <div style={{ display: "flex", gap: 4 }}>
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <button
+                    onClick={() => setShowGraphPopup(true)}
+                    style={{
+                      padding: "4px 8px",
+                      background: t.btnInactive,
+                      border: `1px solid rgba(60,100,160,0.1)`,
+                      borderRadius: 4,
+                      color: "rgba(160,190,230,0.55)",
+                      fontSize: 8,
+                      cursor: "pointer",
+                      fontFamily: "'JetBrains Mono', monospace",
+                      letterSpacing: 0.5,
+                      transition: "all 0.15s",
+                    }}
+                    title="Open resizable graph preview for export"
+                  >⤢ Preview</button>
                   {["PNG", "JPEG"].map(fmt => (
                     <button
                       key={fmt}
@@ -5370,6 +5700,36 @@ export default function BioassayCurveFitter() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Graph Preview Popup */}
+      {showGraphPopup && (
+        <GraphPopup
+          onClose={() => setShowGraphPopup(false)}
+          parsedData={parsedData}
+          fitResult={fitResult}
+          activeModel={activeModel}
+          overlayMode={overlayMode}
+          allFitResults={allFitResults}
+          selectedCompounds={selectedCompounds}
+          getCompoundStyle={getCompoundStyle}
+          overlayEditIndex={overlayEditIndex}
+          loadCompoundForOverlayEdit={loadCompoundForOverlayEdit}
+          chartOutlierIndices={chartOutlierIndices}
+          excludedIndices={excludedIndices}
+          pointView={pointView} setPointView={setPointView}
+          errorBarType={errorBarType} setErrorBarType={setErrorBarType}
+          xAxisLog={xAxisLog} setXAxisLog={setXAxisLog}
+          yAxisFormat={yAxisFormat} setYAxisFormat={setYAxisFormat}
+          yAxisDecimals={yAxisDecimals} setYAxisDecimals={setYAxisDecimals}
+          axisXMin={axisXMin} setAxisXMin={setAxisXMin}
+          axisXMax={axisXMax} setAxisXMax={setAxisXMax}
+          axisYMin={axisYMin} setAxisYMin={setAxisYMin}
+          axisYMax={axisYMax} setAxisYMax={setAxisYMax}
+          statsTableVisible={statsTableVisible} setStatsTableVisible={setStatsTableVisible}
+          statsTablePos={statsTablePos} setStatsTablePos={setStatsTablePos}
+          theme={t}
+        />
       )}
 
       {/* Report Builder */}
