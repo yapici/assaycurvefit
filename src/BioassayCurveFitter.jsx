@@ -614,6 +614,105 @@ function drawPoint(ctx, cx, cy, r, shape) {
   ctx.fill();
 }
 
+// ── Molecule stats table canvas renderer (used for PNG/JPEG export) ───
+function drawStatsTableOnCanvas(ctx, tablePos, allFitResults, selectedCompounds, overlayEditIndex, getCompoundStyle, dpr) {
+  const s = dpr;
+  const x = Math.round(tablePos.x * s);
+  const y = Math.round(tablePos.y * s);
+  const padX = 8 * s;
+  const dragH = 22 * s;
+  const colH = 18 * s;
+  const rowH = 19 * s;
+  const COLS = [
+    { label: "Molecule", w: 100 * s },
+    { label: "EC50",     w: 65 * s },
+    { label: "Hill",     w: 40 * s },
+    { label: "R²",       w: 44 * s },
+    { label: "Model",    w: 40 * s },
+  ];
+  const tableW = COLS.reduce((sum, c) => sum + c.w, 0) + padX;
+  const filteredRows = allFitResults.map((r, i) => ({ r, i })).filter(({ r }) => !selectedCompounds || selectedCompounds.has(r.name));
+  const totalH = dragH + colH + filteredRows.length * rowH + 4 * s;
+
+  // Rounded background
+  const rad = 8 * s;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.lineTo(x + tableW - rad, y);
+  ctx.arcTo(x + tableW, y, x + tableW, y + rad, rad);
+  ctx.lineTo(x + tableW, y + totalH - rad);
+  ctx.arcTo(x + tableW, y + totalH, x + tableW - rad, y + totalH, rad);
+  ctx.lineTo(x + rad, y + totalH);
+  ctx.arcTo(x, y + totalH, x, y + totalH - rad, rad);
+  ctx.lineTo(x, y + rad);
+  ctx.arcTo(x, y, x + rad, y, rad);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(10,15,26,0.92)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(140,170,210,0.25)";
+  ctx.lineWidth = s;
+  ctx.stroke();
+
+  // Header title
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#00e6b4";
+  ctx.font = `bold ${7 * s}px 'JetBrains Mono', monospace`;
+  ctx.fillText("MOLECULE STATS", x + padX, y + dragH / 2);
+
+  // Header separator
+  ctx.strokeStyle = "rgba(140,170,210,0.12)";
+  ctx.lineWidth = s;
+  ctx.beginPath(); ctx.moveTo(x, y + dragH); ctx.lineTo(x + tableW, y + dragH); ctx.stroke();
+
+  // Column headers
+  ctx.fillStyle = "rgba(160,190,230,0.5)";
+  ctx.font = `${8 * s}px 'JetBrains Mono', monospace`;
+  let cx = x + padX;
+  COLS.forEach(col => { ctx.fillText(col.label, cx, y + dragH + colH / 2); cx += col.w; });
+
+  // Data rows
+  filteredRows.forEach(({ r, i: globalIdx }, rowIdx) => {
+    const ry = y + dragH + colH + rowIdx * rowH;
+    if (overlayEditIndex === globalIdx) {
+      ctx.fillStyle = "rgba(255,255,255,0.06)";
+      ctx.fillRect(x, ry, tableW, rowH);
+    }
+    ctx.strokeStyle = "rgba(140,170,210,0.07)";
+    ctx.lineWidth = s;
+    ctx.beginPath(); ctx.moveTo(x, ry); ctx.lineTo(x + tableW, ry); ctx.stroke();
+
+    const style = getCompoundStyle(r.name, globalIdx);
+    const p = r.fitResult?.params;
+    const ec50 = p?.[2];
+    const hill = p?.[1];
+    const r2val = r.fitResult?.r2;
+    const cells = [
+      r.name.length > 12 ? r.name.slice(0, 11) + "…" : r.name,
+      ec50 > 0 ? ec50.toExponential(2) : "—",
+      hill != null ? hill.toFixed(2) : "—",
+      r2val != null ? r2val.toFixed(3) : "—",
+      r.modelType || "—",
+    ];
+    ctx.font = `${9 * s}px 'JetBrains Mono', monospace`;
+    cx = x + padX;
+    COLS.forEach((col, ci) => {
+      if (ci === 0) {
+        ctx.fillStyle = style.color;
+        ctx.fillText("●", cx, ry + rowH / 2);
+        ctx.fillStyle = "rgba(200,220,250,0.85)";
+        ctx.fillText(cells[0], cx + 11 * s, ry + rowH / 2);
+      } else {
+        ctx.fillStyle = ci < 4 ? "rgba(200,220,250,0.75)" : "rgba(160,190,230,0.45)";
+        ctx.fillText(cells[ci], cx, ry + rowH / 2);
+      }
+      cx += col.w;
+    });
+  });
+  ctx.restore();
+}
+
 // ── Chart drawing ─────────────────────────────────────────────────
 function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, theme = {}) {
   const { pointView = "individual", errorBarType = "sd", outlierIndices = null, excludedIndices: exclSet = null,
@@ -2957,23 +3056,30 @@ export default function BioassayCurveFitter() {
     if (!canvas) return;
     const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
     const quality = format === "jpeg" ? 0.95 : undefined;
-    // For JPEG, fill with background color first (canvas transparency becomes black)
+    const needsStatsTable = overlayMode && statsTableVisible && allFitResults?.length > 0;
+    const needsOffscreen = format === "jpeg" || needsStatsTable;
     let exportCanvas = canvas;
-    if (format === "jpeg") {
+    if (needsOffscreen) {
       exportCanvas = document.createElement("canvas");
       exportCanvas.width = canvas.width;
       exportCanvas.height = canvas.height;
       const ctx = exportCanvas.getContext("2d");
-      ctx.fillStyle = t.canvas || "#0a0f1a";
-      ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+      if (format === "jpeg") {
+        ctx.fillStyle = t.canvas || "#0a0f1a";
+        ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+      }
       ctx.drawImage(canvas, 0, 0);
+      if (needsStatsTable) {
+        const dpr = canvas.width / canvas.getBoundingClientRect().width;
+        drawStatsTableOnCanvas(ctx, statsTablePos, allFitResults, selectedCompounds, overlayEditIndex, getCompoundStyle, dpr);
+      }
     }
     const dataUrl = exportCanvas.toDataURL(mimeType, quality);
     const a = document.createElement("a");
     a.href = dataUrl;
     a.download = `bioassay_${activeModel}_fit.${format}`;
     a.click();
-  }, [activeModel, t]);
+  }, [activeModel, t, overlayMode, statsTableVisible, allFitResults, selectedCompounds, statsTablePos, overlayEditIndex, getCompoundStyle]);
 
   // PDF Report Generation
   const generatePdfReport = useCallback(async () => {
@@ -3356,7 +3462,7 @@ export default function BioassayCurveFitter() {
       `}</style>
 
       {/* Header */}
-      <div style={{ maxWidth: 1200, margin: "0 auto 24px", display: "flex", justifyContent: "space-between", alignItems: isMobile ? "center" : "flex-start", flexWrap: "wrap", gap: 12 }}>
+      <div style={{ margin: "0 0 24px", padding: "0 20px", display: "flex", justifyContent: "space-between", alignItems: isMobile ? "center" : "flex-start", flexWrap: "wrap", gap: 12 }}>
         <div>
           <h1 style={{
             fontFamily: "'Space Grotesk', sans-serif",
@@ -3401,7 +3507,7 @@ export default function BioassayCurveFitter() {
         </button>
       </div>
 
-      <div style={{ maxWidth: 1200, margin: "0 auto", display: "grid", gridTemplateColumns: isMobile ? "1fr" : "340px 1fr", gap: 20, alignItems: "start" }}>
+      <div style={{ margin: "0", padding: "0 20px", display: "grid", gridTemplateColumns: isMobile ? "1fr" : "340px 1fr", gap: 20, alignItems: "start" }}>
         {/* Left Panel */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16, order: isMobile ? 2 : 1 }}>
           {/* Data Input */}
