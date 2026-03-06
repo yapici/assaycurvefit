@@ -71,8 +71,18 @@ function downloadMultiTemplate() {
 
 // ── Overlay color palette (one per compound, cycles if >8) ────────
 const OVERLAY_COLORS = [
-  "#3b9eff", "#00e6b4", "#ffb432", "#a855f7",
-  "#ff506a", "#22c55e", "#ec4899", "#eab308",
+  "#3b9eff", // blue
+  "#ef4444", // red
+  "#22c55e", // green
+  "#a855f7", // purple
+  "#f59e0b", // amber
+  "#ec4899", // pink
+  "#06b6d4", // cyan
+  "#f97316", // orange
+  "#10b981", // emerald
+  "#d946ef", // fuchsia
+  "#6366f1", // indigo
+  "#84cc16", // lime
 ];
 
 // ── Numerical Engine ──────────────────────────────────────────────
@@ -1080,10 +1090,15 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-  const W = rect.width, H = rect.height;
+  // For off-screen canvases (detached from DOM) rect is all-zeros; use the raw pixel
+  // dimensions as logical size (effectively dpr=1) so text/points match on-screen charts.
+  const onScreen = rect.width > 0;
+  const W = onScreen ? rect.width  : canvas.width;
+  const H = onScreen ? rect.height : canvas.height;
+  const eDpr = onScreen ? dpr : 1;
+  canvas.width  = W * eDpr;
+  canvas.height = H * eDpr;
+  ctx.scale(eDpr, eDpr);
 
   const pad = { top: 30, right: 30, bottom: 55, left: 70 };
 
@@ -1217,9 +1232,9 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
     const curveColor = modelType === "5PL" ? (t.purple || "#a855f7") : (t.blue || "#3b9eff");
     const curveShadow = modelType === "5PL" ? (t.purpleBg || "rgba(168,85,247,0.4)") : (t.blueBg || "rgba(59,158,255,0.4)");
     ctx.strokeStyle = curveColor;
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 2.0;
     ctx.shadowColor = curveShadow;
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur = 6;
     ctx.beginPath();
     for (let i = 0; i <= 200; i++) {
       const u = xMin + (xMax - xMin) * (i / 200);
@@ -1324,7 +1339,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
       const ptColorEB = compoundStyle?.color ?? (t.teal || "#00e6b4");
       const ptShapeEB = compoundStyle?.shape ?? "circle";
       ctx.fillStyle = ptColorEB;
-      drawPoint(ctx, cx, cyMean, 5, ptShapeEB);
+      drawPoint(ctx, cx, cyMean, 4, ptShapeEB);
     });
   } else {
     // Individual points view
@@ -1358,7 +1373,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
       } else {
         // Normal point — use compound style
         ctx.fillStyle = ptColor;
-        drawPoint(ctx, cx, cy, 4, ptShape);
+        drawPoint(ctx, cx, cy, 3.5, ptShape);
       }
     });
   }
@@ -1370,17 +1385,20 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
 // ── Overlay chart (all compounds on one canvas) ───────────────────
 // overlayCompounds: [{ name, xData, yData, fitResult, modelType, color }, ...]
 function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
-  const { pointView = "individual", axisOverride = null, yAxisFormat = "decimal", yAxisDecimals = 2,
+  const { pointView = "individual", errorBarType = "sd", axisOverride = null, yAxisFormat = "decimal", yAxisDecimals = 2,
           xAxisLog = true } = options;
   const fmtY = v => yAxisFormat === "scientific" ? v.toExponential(yAxisDecimals) : v.toFixed(yAxisDecimals);
   const t = theme;
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-  const W = rect.width, H = rect.height;
+  const onScreen = rect.width > 0;
+  const W = onScreen ? rect.width  : canvas.width;
+  const H = onScreen ? rect.height : canvas.height;
+  const eDpr = onScreen ? dpr : 1;
+  canvas.width  = W * eDpr;
+  canvas.height = H * eDpr;
+  ctx.scale(eDpr, eDpr);
 
   const pad = { top: 30, right: 30, bottom: 55, left: 70 };
 
@@ -1550,10 +1568,12 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
         const mean = g.values.reduce((a, b) => a + b, 0) / n;
         const variance = n > 1 ? g.values.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1) : 0;
         const sd = Math.sqrt(variance);
+        const sem = n > 1 ? sd / Math.sqrt(n) : 0;
+        const errVal = errorBarType === "sem" ? sem : sd;
         const pcx = toCanvasX(xAxisLog ? Math.log10(g.x) : g.x);
         const cyMean = toCanvasY(mean);
-        const cyHi = toCanvasY(mean + sd);
-        const cyLo = toCanvasY(mean - sd);
+        const cyHi = toCanvasY(mean + errVal);
+        const cyLo = toCanvasY(mean - errVal);
         if (n > 1) {
           ctx.strokeStyle = `rgba(${rgb},0.55)`;
           ctx.lineWidth = 1.5;
@@ -1756,6 +1776,8 @@ const SAMPLE_DATA = EXAMPLE_DATASETS["Full sigmoid (5 reps, outliers)"];
 // ── Report Builder ─────────────────────────────────────────────────
 // A WYSIWYG report editor: drag/resize/edit items, then export PNG or PDF.
 
+const RB_DRAFT_KEY = "rb-draft";
+
 const RB_PAGE_SIZES = {
   letter: { w: 816, h: 1056 },
   a4:     { w: 794, h: 1123 },
@@ -1797,7 +1819,8 @@ async function rbDrawItemsToCanvas(ctx, items, page) {
     const { x, y, width: w, height: h } = item;
     switch (item.type) {
       case "chart-image":
-      case "overlay-chart": {
+      case "overlay-chart":
+      case "mol-chart": {
         if (!item.dataUrl) break;
         await new Promise(resolve => {
           const img = new Image();
@@ -1851,6 +1874,15 @@ async function rbDrawItemsToCanvas(ctx, items, page) {
         break;
       case "stats-table":
         rbDrawStatsTableToCanvas(ctx, item);
+        break;
+      case "mol-fit-params":
+        rbDrawTableToCanvas(ctx, item, rbGetFitParamsRows(item.fitResult, item.modelType), item.title);
+        break;
+      case "mol-gof":
+        rbDrawTableToCanvas(ctx, item, rbGetGoFRows(item.fitResult), item.title);
+        break;
+      case "mol-raw-data":
+        rbDrawRawDataToCanvas(ctx, item);
         break;
       default: break;
     }
@@ -1954,6 +1986,56 @@ function rbDrawStatsTableToCanvas(ctx, item) {
   });
 }
 
+// ── Per-molecule raw data rows ────────────────────────────────────
+function rbGetRawDataRows(molFit, molMulti) {
+  if (!molFit?.xData?.length) return { columns: [], rows: [] };
+  const grouped = groupByConcentration(molFit.xData, molFit.yData);
+  const columns = ["Conc (M)", "Mean", "SD", "SEM", "%CV", "n"];
+  const fmtNum = (v) => (v == null || isNaN(v)) ? "--" : (Math.abs(v) < 0.01 || Math.abs(v) > 99999) ? v.toExponential(3) : v.toFixed(4);
+  const rows = grouped.map(g => {
+    const cv = g.mean !== 0 && g.n > 1 ? ((g.sd / Math.abs(g.mean)) * 100).toFixed(1) + "%" : "--";
+    return [g.x.toExponential(2), fmtNum(g.mean), g.n > 1 ? fmtNum(g.sd) : "--", g.n > 1 ? fmtNum(g.sem) : "--", cv, String(g.n)];
+  });
+  return { columns, rows };
+}
+
+function rbDrawRawDataToCanvas(ctx, item) {
+  const { columns, rows } = item.rawData || { columns: [], rows: [] };
+  if (!rows?.length) return;
+  const { x, y, width: w, height: h, title } = item;
+  const pad = 4, titleH = title ? 28 : 0, colHeaderH = 16;
+  const rowH = Math.min(16, (h - titleH - colHeaderH) / Math.max(rows.length, 1));
+  const colW = w / columns.length;
+  ctx.fillStyle = "#f8fafd"; ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = "#c8d8ec"; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
+  if (title) {
+    ctx.fillStyle = "#1a3a6a"; ctx.fillRect(x, y, w, titleH);
+    ctx.fillStyle = "#fff"; ctx.font = "bold 11px Arial, sans-serif";
+    ctx.textAlign = "left"; ctx.fillText(title, x + pad, y + titleH - 9);
+  }
+  let cy = y + titleH;
+  ctx.fillStyle = "rgba(40,80,140,0.1)"; ctx.fillRect(x, cy, w, colHeaderH);
+  columns.forEach((col, ci) => {
+    ctx.fillStyle = "#1a3a6a"; ctx.font = "bold 7px Arial, sans-serif";
+    ctx.textAlign = ci === 0 ? "left" : "right";
+    const cx = x + ci * colW;
+    ctx.fillText(col, ci === 0 ? cx + pad : cx + colW - pad, cy + colHeaderH - 4);
+  });
+  cy += colHeaderH;
+  rows.forEach((row, ri) => {
+    if (ri % 2 === 0) { ctx.fillStyle = "rgba(200,220,240,0.18)"; ctx.fillRect(x, cy, w, rowH); }
+    row.forEach((val, ci) => {
+      ctx.fillStyle = "#1a2a3a"; ctx.font = "7px Arial, sans-serif";
+      ctx.textAlign = ci === 0 ? "left" : "right";
+      const cx = x + ci * colW;
+      ctx.fillText(String(val), ci === 0 ? cx + pad : cx + colW - pad, cy + rowH - 4);
+    });
+    ctx.strokeStyle = "rgba(100,140,180,0.1)"; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(x, cy + rowH); ctx.lineTo(x + w, cy + rowH); ctx.stroke();
+    cy += rowH;
+  });
+}
+
 // ── RBReportItem: one draggable/resizable element on the page ─────
 function RBReportItem({ item, isSelected, isEditing, onSelect, onStartEdit, onStopEdit, onChange, onStartDrag, getCompoundStyle }) {
   const HANDLE_POS = {
@@ -1992,6 +2074,7 @@ function RBItemContent({ item, isEditing, onChange, onStopEdit, getCompoundStyle
   switch (item.type) {
     case "chart-image":
     case "overlay-chart":
+    case "mol-chart":
       return (
         <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {item.dataUrl
@@ -2040,6 +2123,12 @@ function RBItemContent({ item, isEditing, onChange, onStopEdit, getCompoundStyle
       return <RBDataTable rows={rbGetGoFRows(item.fitResult)} title={item.title} />;
     case "stats-table":
       return <RBStatsTable item={item} getCompoundStyle={getCompoundStyle} />;
+    case "mol-fit-params":
+      return <RBDataTable rows={rbGetFitParamsRows(item.fitResult, item.modelType)} title={item.title} />;
+    case "mol-gof":
+      return <RBDataTable rows={rbGetGoFRows(item.fitResult)} title={item.title} />;
+    case "mol-raw-data":
+      return <RBRawDataTable columns={item.rawData?.columns || []} rows={item.rawData?.rows || []} title={item.title} />;
     default:
       return <div style={{ width: "100%", height: "100%", background: "#eee", display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontSize: 11 }}>{item.type}</div>;
   }
@@ -2101,8 +2190,30 @@ function RBStatsTable({ item, getCompoundStyle }) {
   );
 }
 
+function RBRawDataTable({ columns, rows, title }) {
+  if (!rows?.length) return <div style={{ width: "100%", height: "100%", background: "#f8fafd", border: "1px solid #c8d8ec", display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontSize: 11 }}>No data</div>;
+  const gridCols = columns.map(() => "1fr").join(" ");
+  return (
+    <div style={{ width: "100%", height: "100%", background: "#f8fafd", border: "1px solid #c8d8ec", overflow: "hidden", fontFamily: "Arial, sans-serif", boxSizing: "border-box" }}>
+      {title && <div style={{ background: "#1a3a6a", color: "#fff", padding: "5px 8px", fontSize: 11, fontWeight: "bold" }}>{title}</div>}
+      <div style={{ display: "grid", gridTemplateColumns: gridCols, background: "rgba(40,80,140,0.08)", borderBottom: "1px solid rgba(100,140,180,0.15)" }}>
+        {columns.map((col, ci) => (
+          <span key={ci} style={{ fontSize: 8, fontWeight: "bold", color: "#1a3a6a", padding: "3px 4px", textAlign: ci === 0 ? "left" : "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{col}</span>
+        ))}
+      </div>
+      {rows.map((row, ri) => (
+        <div key={ri} style={{ display: "grid", gridTemplateColumns: gridCols, background: ri % 2 === 0 ? "rgba(200,220,240,0.15)" : "transparent", borderBottom: "1px solid rgba(100,140,180,0.08)" }}>
+          {row.map((val, ci) => (
+            <span key={ci} style={{ fontSize: 8, padding: "2px 4px", textAlign: ci === 0 ? "left" : "right", fontFamily: "monospace", color: "#1a2a3a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{val}</span>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Properties Panel ──────────────────────────────────────────────
-function RBPropertiesPanel({ item, onChange, onDelete, onDuplicate }) {
+function RBPropertiesPanel({ item, onChange, onDelete, onDuplicate, totalPages }) {
   const lbl = { fontSize: 9, color: "rgba(160,190,230,0.5)", display: "block", marginBottom: 2 };
   const inp = { width: "100%", padding: "4px 6px", background: "#1a2035", border: "1px solid rgba(60,100,160,0.22)", borderRadius: 4, color: "#c8daf0", fontSize: 10, fontFamily: "'JetBrains Mono', monospace", outline: "none", boxSizing: "border-box" };
   const sec = (label, children) => (
@@ -2130,6 +2241,17 @@ function RBPropertiesPanel({ item, onChange, onDelete, onDuplicate }) {
               <input type="number" value={Math.round(item[key] ?? 0)} style={inp} onChange={e => onChange({ [key]: Number(e.target.value) })} />
             </div>
           ))}
+          {totalPages > 1 && (
+            <div style={{ gridColumn: "1 / -1" }}>
+              <label style={lbl}>Page</label>
+              <select value={item.page ?? 0} onChange={e => onChange({ page: Number(e.target.value) })}
+                style={{ ...inp, padding: "3px 5px" }}>
+                {Array.from({ length: totalPages }, (_, i) => (
+                  <option key={i} value={i}>Page {i + 1}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       )}
 
@@ -2154,11 +2276,18 @@ function RBPropertiesPanel({ item, onChange, onDelete, onDuplicate }) {
         <input type="color" value={item.color || "#1a2a40"} onChange={e => onChange({ color: e.target.value })} style={{ width: "100%", height: 28, border: "none", background: "transparent", cursor: "pointer" }} />
       </>)}
 
-      {(item.type === "chart-image" || item.type === "overlay-chart") && sec("Caption", <>
+      {(item.type === "chart-image" || item.type === "overlay-chart" || item.type === "mol-chart") && sec("Caption", <>
         <textarea value={item.caption || ""} placeholder="Optional caption…" style={{ ...inp, height: 48, resize: "vertical" }} onChange={e => onChange({ caption: e.target.value })} />
       </>)}
 
       {(item.type === "fit-params" || item.type === "gof-table") && sec("Table", <>
+        <label style={lbl}>Title</label>
+        <input type="text" value={item.title || ""} style={inp} onChange={e => onChange({ title: e.target.value })} />
+      </>)}
+
+      {(item.type === "mol-fit-params" || item.type === "mol-gof" || item.type === "mol-raw-data") && sec("Molecule Item", <>
+        <label style={lbl}>Molecule</label>
+        <div style={{ ...inp, background: "rgba(168,85,247,0.1)", border: "1px solid rgba(168,85,247,0.25)", marginBottom: 6, cursor: "default" }}>{item.moleculeName || "--"}</div>
         <label style={lbl}>Title</label>
         <input type="text" value={item.title || ""} style={inp} onChange={e => onChange({ title: e.target.value })} />
       </>)}
@@ -2231,7 +2360,7 @@ function RBPropertiesPanel({ item, onChange, onDelete, onDuplicate }) {
 }
 
 // ── Main ReportBuilder component ──────────────────────────────────
-function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, activeModel, allFitResults, getCompoundStyle }) {
+function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, activeModel, allFitResults, getCompoundStyle, multiData, renderMolChart }) {
   const idRef = useRef(1000);
   const genId = () => `rb-${idRef.current++}`;
 
@@ -2241,6 +2370,8 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
   const [exporting, setExporting] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [editingId, setEditingId] = useState(null);
+  const [totalPages, setTotalPages] = useState(1);
+  const [activePage, setActivePage] = useState(0);
 
   // Build default layout when component first mounts
   const [items, setItems] = useState(() => {
@@ -2248,23 +2379,65 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
     const init = [];
     const pw = RB_PAGE_SIZES.letter.w;
     const now = new Date().toLocaleDateString();
-    init.push({ id: id(), type: "text", x: 40, y: 28, width: pw - 80, height: 44, content: "Bioassay Report", fontSize: 22, fontWeight: "bold", fontStyle: "normal", color: "#0a1a3a", align: "left" });
-    init.push({ id: id(), type: "text", x: 40, y: 74, width: pw - 80, height: 20, content: `Generated: ${now}  |  Model: ${activeModel || "N/A"}`, fontSize: 10, fontWeight: "normal", fontStyle: "italic", color: "#667788", align: "left" });
-    init.push({ id: id(), type: "divider", x: 40, y: 100, width: pw - 80, height: 6, color: "#2a4a8a", thickness: 1 });
+    init.push({ id: id(), type: "text", page: 0, x: 40, y: 28, width: pw - 80, height: 44, content: "Bioassay Report", fontSize: 22, fontWeight: "bold", fontStyle: "normal", color: "#0a1a3a", align: "left" });
+    init.push({ id: id(), type: "text", page: 0, x: 40, y: 74, width: pw - 80, height: 20, content: `Generated: ${now}  |  Model: ${activeModel || "N/A"}`, fontSize: 10, fontWeight: "normal", fontStyle: "italic", color: "#667788", align: "left" });
+    init.push({ id: id(), type: "divider", page: 0, x: 40, y: 100, width: pw - 80, height: 6, color: "#2a4a8a", thickness: 1 });
     if (chartDataUrl) {
-      init.push({ id: id(), type: "chart-image", x: 40, y: 114, width: 478, height: 320, dataUrl: chartDataUrl, caption: "" });
+      init.push({ id: id(), type: "chart-image", page: 0, x: 40, y: 114, width: 478, height: 320, dataUrl: chartDataUrl, caption: "" });
     }
     if (fitResult && activeModel) {
       const nRows = activeModel === "5PL" ? 6 : 5;
-      init.push({ id: id(), type: "fit-params", x: 538, y: 114, width: 238, height: nRows * 24 + 36, fitResult, modelType: activeModel, title: `${activeModel} Parameters` });
-      init.push({ id: id(), type: "gof-table", x: 538, y: 114 + nRows * 24 + 44, width: 238, height: 196, fitResult, modelType: activeModel, title: "Goodness of Fit" });
+      init.push({ id: id(), type: "fit-params", page: 0, x: 538, y: 114, width: 238, height: nRows * 24 + 36, fitResult, modelType: activeModel, title: `${activeModel} Parameters` });
+      init.push({ id: id(), type: "gof-table", page: 0, x: 538, y: 114 + nRows * 24 + 44, width: 238, height: 196, fitResult, modelType: activeModel, title: "Goodness of Fit" });
     }
     if (allFitResults?.length > 0) {
       const tableY = chartDataUrl ? 448 : 114;
-      init.push({ id: id(), type: "stats-table", x: 40, y: tableY, width: pw - 80, height: Math.min(320, 46 + allFitResults.length * 22), data: allFitResults, title: "Molecule Summary", columns: [...RB_DEFAULT_COLUMNS] });
+      init.push({ id: id(), type: "stats-table", page: 0, x: 40, y: tableY, width: pw - 80, height: Math.min(320, 46 + allFitResults.length * 22), data: allFitResults, title: "Molecule Summary", columns: [...RB_DEFAULT_COLUMNS] });
     }
     return init;
   });
+
+  // ── Auto-save drafts ──
+  const [draftBanner, setDraftBanner] = useState(null);
+
+  // Check for saved draft on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(RB_DRAFT_KEY);
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      if (draft?.items?.length > 0 && draft.timestamp) {
+        setDraftBanner({ timestamp: draft.timestamp, items: draft.items, pageKey: draft.pageKey, totalPages: draft.totalPages || 1 });
+      }
+    } catch { /* ignore corrupt data */ }
+  }, []);
+
+  // Save every 60 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      try {
+        const draft = {
+          items: items.map(it => {
+            // Strip large dataUrls to stay within localStorage ~5MB
+            if ((it.type === "chart-image" || it.type === "overlay-chart" || it.type === "mol-chart") && it.dataUrl) {
+              return { ...it, dataUrl: null, _hadDataUrl: true };
+            }
+            return it;
+          }),
+          pageKey,
+          totalPages,
+          timestamp: Date.now(),
+        };
+        localStorage.setItem(RB_DRAFT_KEY, JSON.stringify(draft));
+      } catch { /* quota exceeded or unavailable */ }
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [items, pageKey, totalPages]);
+
+  const handleClose = useCallback(() => {
+    try { localStorage.removeItem(RB_DRAFT_KEY); } catch {}
+    onClose();
+  }, [onClose]);
 
   const updateItem = useCallback((id, changes) =>
     setItems(prev => prev.map(it => it.id === id ? { ...it, ...changes } : it)), []);
@@ -2295,9 +2468,89 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
       "stats-table":    { x: 40, y: 40, width: pw - 80, height: 200, data: allFitResults, title: "Molecule Summary", columns: [...RB_DEFAULT_COLUMNS] },
       "divider":        { x: 40, y: 200, width: pw - 80, height: 6, color: "#cccccc", thickness: 1 },
     };
-    setItems(prev => [...prev, { id: newId, type, ...baseDefaults[type] }]);
+    setItems(prev => [...prev, { id: newId, type, page: activePage, ...baseDefaults[type] }]);
     setSelectedId(newId);
-  }, [chartDataUrl, overlayChartDataUrl, fitResult, activeModel, allFitResults, page.w]);
+  }, [chartDataUrl, overlayChartDataUrl, fitResult, activeModel, allFitResults, page.w, activePage]);
+
+  // ── Per-molecule item helpers ──
+  const [molPickerOpen, setMolPickerOpen] = useState(false);
+
+  const addMolItem = useCallback((type, molIndex) => {
+    const r = allFitResults[molIndex];
+    if (!r) return;
+    const id = genId();
+    const name = r.name || `Molecule ${molIndex + 1}`;
+    const pw = page.w;
+    let data;
+    switch (type) {
+      case "mol-chart": {
+        const dataUrl = renderMolChart ? renderMolChart(molIndex) : null;
+        data = { x: 40, y: 40, width: 480, height: 320, dataUrl, caption: name, moleculeIndex: molIndex, moleculeName: name };
+        break;
+      }
+      case "mol-fit-params": {
+        const nRows = r.modelType === "5PL" ? 6 : 5;
+        data = { x: 40, y: 40, width: 260, height: nRows * 24 + 36, fitResult: r.fitResult, modelType: r.modelType,
+          title: `${name} \u2014 ${r.modelType || "Fit"} Parameters`, moleculeIndex: molIndex, moleculeName: name };
+        break;
+      }
+      case "mol-gof": {
+        data = { x: 40, y: 40, width: 260, height: 210, fitResult: r.fitResult, modelType: r.modelType,
+          title: `${name} \u2014 Goodness of Fit`, moleculeIndex: molIndex, moleculeName: name };
+        break;
+      }
+      case "mol-raw-data": {
+        const molMulti = multiData ? multiData[molIndex] : null;
+        const rawData = rbGetRawDataRows(r, molMulti);
+        const nCols = rawData.columns.length;
+        data = { x: 40, y: 40, width: Math.min(pw - 80, nCols * 60 + 40), height: Math.min(400, 46 + rawData.rows.length * 18),
+          rawData, title: `${name} \u2014 Raw Data`, moleculeIndex: molIndex, moleculeName: name };
+        break;
+      }
+      default: return;
+    }
+    setItems(prev => [...prev, { id, type, page: activePage, ...data }]);
+    setSelectedId(id);
+  }, [allFitResults, multiData, renderMolChart, page.w, activePage]);
+
+  const addAllMolItems = useCallback((molIndex) => {
+    const r = allFitResults[molIndex];
+    if (!r) return;
+    const name = r.name || `Molecule ${molIndex + 1}`;
+    const pw = page.w;
+    const batch = [];
+    let yPos = 40;
+    // Chart
+    const dataUrl = renderMolChart ? renderMolChart(molIndex) : null;
+    batch.push({ id: genId(), type: "mol-chart", page: activePage, x: 40, y: yPos, width: 480, height: 320,
+      dataUrl, caption: name, moleculeIndex: molIndex, moleculeName: name });
+    // Fit params (right of chart)
+    const nRows = r.modelType === "5PL" ? 6 : 5;
+    batch.push({ id: genId(), type: "mol-fit-params", page: activePage, x: 538, y: yPos, width: 238, height: nRows * 24 + 36,
+      fitResult: r.fitResult, modelType: r.modelType,
+      title: `${name} \u2014 ${r.modelType || "Fit"} Parameters`, moleculeIndex: molIndex, moleculeName: name });
+    // GoF (below fit params)
+    batch.push({ id: genId(), type: "mol-gof", page: activePage, x: 538, y: yPos + nRows * 24 + 44, width: 238, height: 210,
+      fitResult: r.fitResult, modelType: r.modelType,
+      title: `${name} \u2014 Goodness of Fit`, moleculeIndex: molIndex, moleculeName: name });
+    yPos += 330;
+    // Raw data (below chart)
+    const molMulti = multiData ? multiData[molIndex] : null;
+    const rawData = rbGetRawDataRows(r, molMulti);
+    const nCols = rawData.columns.length;
+    batch.push({ id: genId(), type: "mol-raw-data", page: activePage, x: 40, y: yPos,
+      width: Math.min(pw - 80, nCols * 60 + 40), height: Math.min(300, 46 + rawData.rows.length * 18),
+      rawData, title: `${name} \u2014 Raw Data`, moleculeIndex: molIndex, moleculeName: name });
+    setItems(prev => [...prev, ...batch]);
+  }, [allFitResults, multiData, renderMolChart, page.w, activePage]);
+
+  // Close molecule picker on outside click
+  useEffect(() => {
+    if (!molPickerOpen) return;
+    const handler = () => setMolPickerOpen(false);
+    const timer = setTimeout(() => window.addEventListener("click", handler), 0);
+    return () => { clearTimeout(timer); window.removeEventListener("click", handler); };
+  }, [molPickerOpen]);
 
   // Drag & resize via mouse events
   const dragRef = useRef({ active: false, type: null, itemId: null, startX: 0, startY: 0, origX: 0, origY: 0, origW: 0, origH: 0, handle: "" });
@@ -2317,7 +2570,10 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
       const dx = (e.clientX - d.startX) / zoom;
       const dy = (e.clientY - d.startY) / zoom;
       if (d.type === "move") {
-        updateItem(d.itemId, { x: Math.max(0, d.origX + dx), y: Math.max(0, d.origY + dy) });
+        updateItem(d.itemId, {
+          x: Math.max(0, Math.min(page.w - d.origW, d.origX + dx)),
+          y: Math.max(0, Math.min(page.h - d.origH, d.origY + dy)),
+        });
       } else {
         let nx = d.origX, ny = d.origY, nw = d.origW, nh = d.origH;
         const minW = 50, minH = 20;
@@ -2332,7 +2588,7 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-  }, [zoom, updateItem]);
+  }, [zoom, updateItem, page.w, page.h]);
 
   useEffect(() => {
     const handler = (e) => {
@@ -2346,27 +2602,47 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
     return () => window.removeEventListener("keydown", handler);
   }, [selectedId, editingId, deleteItem]);
 
-  // Build offscreen canvas from all items for export
-  const buildExportCanvas = async () => {
+  // Build offscreen canvases — one per page — for export
+  const buildExportCanvases = async () => {
     const scale = 2;
-    const canvas = document.createElement("canvas");
-    canvas.width = page.w * scale;
-    canvas.height = page.h * scale;
-    const ctx = canvas.getContext("2d");
-    ctx.scale(scale, scale);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, page.w, page.h);
-    await rbDrawItemsToCanvas(ctx, items, page);
-    return canvas;
+    const canvases = [];
+    for (let p = 0; p < totalPages; p++) {
+      const canvas = document.createElement("canvas");
+      canvas.width = page.w * scale;
+      canvas.height = page.h * scale;
+      const ctx = canvas.getContext("2d");
+      ctx.scale(scale, scale);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, page.w, page.h);
+      const pageItems = items.filter(it => (it.page ?? 0) === p);
+      await rbDrawItemsToCanvas(ctx, pageItems, page);
+      canvases.push(canvas);
+    }
+    return canvases;
   };
 
   const exportPNG = async () => {
     setExporting(true); setSelectedId(null); setEditingId(null);
     await new Promise(r => setTimeout(r, 80));
     try {
-      const canvas = await buildExportCanvas();
+      const canvases = await buildExportCanvases();
+      const scale = 2;
+      const gap = 4 * scale;
+      const totalH = canvases.reduce((sum, c) => sum + c.height, 0) + gap * (canvases.length - 1);
+      const merged = document.createElement("canvas");
+      merged.width = page.w * scale;
+      merged.height = totalH;
+      const mctx = merged.getContext("2d");
+      mctx.fillStyle = "#e0e0e0";
+      mctx.fillRect(0, 0, merged.width, merged.height);
+      let yOff = 0;
+      for (const c of canvases) {
+        mctx.drawImage(c, 0, yOff);
+        yOff += c.height + gap;
+      }
       const a = document.createElement("a");
-      a.href = canvas.toDataURL("image/png"); a.download = "bioassay_report.png"; a.click();
+      a.href = merged.toDataURL("image/png"); a.download = "bioassay_report.png"; a.click();
+      try { localStorage.removeItem(RB_DRAFT_KEY); } catch {}
     } finally { setExporting(false); }
   };
 
@@ -2374,11 +2650,15 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
     setExporting(true); setSelectedId(null); setEditingId(null);
     await new Promise(r => setTimeout(r, 80));
     try {
-      const canvas = await buildExportCanvas();
+      const canvases = await buildExportCanvases();
       const { jsPDF } = await import("jspdf");
       const doc = new jsPDF({ orientation: "portrait", unit: "px", format: [page.w, page.h] });
-      doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, page.w, page.h);
+      for (let i = 0; i < canvases.length; i++) {
+        if (i > 0) doc.addPage([page.w, page.h], "portrait");
+        doc.addImage(canvases[i].toDataURL("image/png"), "PNG", 0, 0, page.w, page.h);
+      }
       doc.save("bioassay_report.pdf");
+      try { localStorage.removeItem(RB_DRAFT_KEY); } catch {}
     } finally { setExporting(false); }
   };
 
@@ -2394,7 +2674,7 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
     <div style={{ position: "fixed", inset: 0, background: "#12172a", zIndex: 2000, display: "flex", flexDirection: "column", fontFamily: "'JetBrains Mono', monospace" }}>
 
       {/* ── Toolbar ── */}
-      <div style={{ height: 46, background: "#080c18", borderBottom: "1px solid rgba(60,100,160,0.25)", display: "flex", alignItems: "center", gap: 5, padding: "0 12px", flexShrink: 0, overflowX: "auto" }}>
+      <div style={{ height: 46, background: "#080c18", borderBottom: "1px solid rgba(60,100,160,0.25)", display: "flex", alignItems: "center", gap: 5, padding: "0 12px", flexShrink: 0, overflow: "visible" }}>
         <span style={{ fontSize: 11, fontWeight: 700, color: "#3b9eff", marginRight: 6, whiteSpace: "nowrap" }}>Report Builder</span>
         <div style={{ width: 1, height: 24, background: "rgba(60,100,160,0.3)", flexShrink: 0 }} />
 
@@ -2412,6 +2692,51 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
           <button key={type} onClick={() => addItem(type)} style={tbStyle("rgba(25,38,72,0.8)", "rgba(60,100,160,0.3)")}>{label}</button>
         ))}
 
+        {/* Per-molecule dropdown */}
+        {allFitResults?.length > 0 && (
+          <div style={{ position: "relative" }} onClick={e => e.stopPropagation()}>
+            <button onClick={() => setMolPickerOpen(v => !v)}
+              style={tbStyle("rgba(168,85,247,0.12)", "rgba(168,85,247,0.35)")}>
+              Per Molecule {molPickerOpen ? "\u25B2" : "\u25BC"}
+            </button>
+            {molPickerOpen && (
+              <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4,
+                background: "#12172a", border: "1px solid rgba(168,85,247,0.3)",
+                borderRadius: 6, padding: 6, zIndex: 100, width: 300,
+                maxHeight: 340, overflowY: "auto",
+                boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
+                {allFitResults.map((r, idx) => {
+                  const cs = getCompoundStyle(r.name, idx);
+                  const mbtn = (label, tip, type) => (
+                    <button key={type} onClick={() => { addMolItem(type, idx); setMolPickerOpen(false); }}
+                      title={tip} style={{ padding: "2px 6px", background: "none",
+                        border: "1px solid rgba(60,100,160,0.2)", borderRadius: 3,
+                        color: "rgba(160,190,230,0.6)", fontSize: 9, cursor: "pointer",
+                        fontFamily: "'JetBrains Mono', monospace" }}>{label}</button>
+                  );
+                  return (
+                    <div key={idx} style={{ display: "flex", alignItems: "center", gap: 4,
+                      padding: "4px 6px", borderBottom: "1px solid rgba(60,100,160,0.1)" }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: cs.color, flexShrink: 0 }} />
+                      <span style={{ flex: 1, fontSize: 9, color: "#c8daf0", overflow: "hidden",
+                        textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{r.name}</span>
+                      {mbtn("Plot", "Add plot", "mol-chart")}
+                      {mbtn("Model", "Add model params", "mol-fit-params")}
+                      {mbtn("GoF", "Add GoF stats", "mol-gof")}
+                      {mbtn("Raw", "Add raw data", "mol-raw-data")}
+                      <button onClick={() => { addAllMolItems(idx); setMolPickerOpen(false); }}
+                        title="Add all" style={{ padding: "2px 6px", background: "rgba(168,85,247,0.1)",
+                          border: "1px solid rgba(168,85,247,0.3)", borderRadius: 3,
+                          color: "rgba(168,85,247,0.8)", fontSize: 9, cursor: "pointer",
+                          fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }}>ALL</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         <div style={{ width: 1, height: 24, background: "rgba(60,100,160,0.3)", flexShrink: 0, margin: "0 2px" }} />
 
         {/* Page size & zoom */}
@@ -2423,6 +2748,23 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
           {[0.5, 0.6, 0.72, 0.85, 1.0, 1.25].map(z => <option key={z} value={z}>{Math.round(z * 100)}%</option>)}
         </select>
 
+        <div style={{ width: 1, height: 24, background: "rgba(60,100,160,0.3)", flexShrink: 0, margin: "0 2px" }} />
+        <span style={{ fontSize: 9, color: "rgba(160,190,230,0.6)", whiteSpace: "nowrap", fontFamily: "'JetBrains Mono', monospace" }}>
+          Pg {activePage + 1}/{totalPages}
+        </span>
+        <button onClick={() => { setTotalPages(n => n + 1); setActivePage(totalPages); }}
+          style={tbStyle("rgba(0,230,180,0.08)", "rgba(0,230,180,0.3)")}>+ Page</button>
+        <button onClick={() => {
+          if (totalPages <= 1) return;
+          const lastPage = totalPages - 1;
+          const hasItems = items.some(it => (it.page ?? 0) === lastPage);
+          if (hasItems && !window.confirm(`Page ${lastPage + 1} has items. Remove it?`)) return;
+          setItems(prev => prev.filter(it => (it.page ?? 0) !== lastPage));
+          setTotalPages(n => n - 1);
+          if (activePage >= lastPage) setActivePage(lastPage - 1);
+        }} disabled={totalPages <= 1}
+          style={tbStyle("rgba(255,70,70,0.08)", "rgba(255,70,70,0.25)")}>- Page</button>
+
         {selectedId && <>
           <div style={{ width: 1, height: 24, background: "rgba(60,100,160,0.3)", flexShrink: 0, margin: "0 2px" }} />
           <button onClick={() => deleteItem(selectedId)} style={tbStyle("rgba(255,70,70,0.1)", "rgba(255,70,70,0.3)")}>🗑 Delete</button>
@@ -2432,36 +2774,80 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
         <div style={{ flex: 1 }} />
         <button onClick={exportPNG} disabled={exporting} style={tbStyle("rgba(0,230,180,0.12)", "rgba(0,230,180,0.4)")}>{exporting ? "Exporting…" : "↓ PNG"}</button>
         <button onClick={exportPDF} disabled={exporting} style={tbStyle("rgba(59,158,255,0.12)", "rgba(59,158,255,0.4)")}>{exporting ? "Exporting…" : "↓ PDF"}</button>
-        <button onClick={onClose} style={tbStyle("rgba(50,65,110,0.4)", "rgba(100,130,180,0.3)")}>✕ Close</button>
+        <button onClick={handleClose} style={tbStyle("rgba(50,65,110,0.4)", "rgba(100,130,180,0.3)")}>✕ Close</button>
       </div>
+
+      {/* ── Draft restore banner ── */}
+      {draftBanner && (
+        <div style={{ padding: "8px 16px", background: "rgba(255,180,50,0.1)",
+          borderBottom: "1px solid rgba(255,180,50,0.25)",
+          display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+          <span style={{ fontSize: 10, color: "rgba(255,200,100,0.9)", flex: 1,
+            fontFamily: "'JetBrains Mono', monospace" }}>
+            Draft from {new Date(draftBanner.timestamp).toLocaleString()} available
+          </span>
+          <button onClick={() => {
+            setItems(draftBanner.items.map(it => it.page == null ? { ...it, page: 0 } : it));
+            if (draftBanner.pageKey) setPageKey(draftBanner.pageKey);
+            setTotalPages(draftBanner.totalPages || 1);
+            setActivePage(0);
+            setDraftBanner(null);
+          }} style={{ padding: "4px 12px", background: "rgba(59,158,255,0.15)",
+            border: "1px solid rgba(59,158,255,0.4)", borderRadius: 4,
+            color: "#3b9eff", fontSize: 10, cursor: "pointer",
+            fontFamily: "'JetBrains Mono', monospace" }}>Restore</button>
+          <button onClick={() => {
+            setDraftBanner(null);
+            try { localStorage.removeItem(RB_DRAFT_KEY); } catch {}
+          }} style={{ padding: "4px 12px", background: "rgba(255,70,70,0.08)",
+            border: "1px solid rgba(255,70,70,0.25)", borderRadius: 4,
+            color: "rgba(255,100,100,0.7)", fontSize: 10, cursor: "pointer",
+            fontFamily: "'JetBrains Mono', monospace" }}>Dismiss</button>
+        </div>
+      )}
 
       {/* ── Body: page canvas + optional properties panel ── */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
 
         {/* Scrollable page area */}
-        <div style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 32, background: "#191e2e" }}
+        <div style={{ flex: 1, overflow: "auto", display: "flex", justifyContent: "center", padding: 32, background: "#191e2e" }}
           onClick={() => { setSelectedId(null); setEditingId(null); }}>
 
-          {/* White "paper" container — sized to zoom level */}
-          <div style={{ width: page.w * zoom, height: page.h * zoom, background: "white", position: "relative", flexShrink: 0, boxShadow: "0 8px 48px rgba(0,0,0,0.6)" }}
-            onClick={e => e.stopPropagation()}>
-            {/* Inner page at natural scale, scaled via CSS transform */}
-            <div style={{ width: page.w, height: page.h, position: "absolute", top: 0, left: 0, transform: `scale(${zoom})`, transformOrigin: "top left" }}>
-              {items.map(item => (
-                <RBReportItem
-                  key={item.id}
-                  item={item}
-                  isSelected={selectedId === item.id}
-                  isEditing={editingId === item.id}
-                  onSelect={() => setSelectedId(item.id)}
-                  onStartEdit={() => setEditingId(item.id)}
-                  onStopEdit={() => setEditingId(null)}
-                  onChange={changes => updateItem(item.id, changes)}
-                  onStartDrag={startDrag}
-                  getCompoundStyle={getCompoundStyle}
-                />
-              ))}
-            </div>
+          {/* Vertical stack of pages */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 24, alignItems: "center" }}>
+            {Array.from({ length: totalPages }, (_, pageIndex) => {
+              const pageItems = items.filter(it => (it.page ?? 0) === pageIndex);
+              const isActive = pageIndex === activePage;
+              return (
+                <div key={pageIndex}
+                  style={{ width: page.w * zoom, height: page.h * zoom, background: "white", position: "relative", flexShrink: 0,
+                    boxShadow: isActive ? "0 0 0 2px #3b9eff, 0 8px 48px rgba(0,0,0,0.6)" : "0 8px 48px rgba(0,0,0,0.6)" }}
+                  onClick={e => { e.stopPropagation(); setActivePage(pageIndex); setSelectedId(null); setEditingId(null); }}>
+                  {/* Inner page at natural scale, scaled via CSS transform */}
+                  <div style={{ width: page.w, height: page.h, position: "absolute", top: 0, left: 0, transform: `scale(${zoom})`, transformOrigin: "top left" }}>
+                    {pageItems.map(item => (
+                      <RBReportItem
+                        key={item.id}
+                        item={item}
+                        isSelected={selectedId === item.id}
+                        isEditing={editingId === item.id}
+                        onSelect={() => { setSelectedId(item.id); setActivePage(pageIndex); }}
+                        onStartEdit={() => setEditingId(item.id)}
+                        onStopEdit={() => setEditingId(null)}
+                        onChange={changes => updateItem(item.id, changes)}
+                        onStartDrag={startDrag}
+                        getCompoundStyle={getCompoundStyle}
+                      />
+                    ))}
+                  </div>
+                  {/* Page number */}
+                  <div style={{ position: "absolute", bottom: 4 * zoom, left: 0, right: 0, textAlign: "center",
+                    fontSize: 9 * zoom, color: "rgba(0,0,0,0.2)", pointerEvents: "none", fontFamily: "Arial, sans-serif" }}>
+                    {pageIndex + 1}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -2473,6 +2859,7 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
               onChange={changes => updateItem(selectedItem.id, changes)}
               onDelete={() => deleteItem(selectedItem.id)}
               onDuplicate={() => duplicateItem(selectedItem.id)}
+              totalPages={totalPages}
             />
           </div>
         )}
@@ -2500,6 +2887,7 @@ export default function BioassayCurveFitter() {
   const [showReportBuilder, setShowReportBuilder] = useState(false);
   const [showGraphPopup, setShowGraphPopup] = useState(false);
   const [rbChartUrl, setRbChartUrl] = useState(null);
+
   const [pdfSections, setPdfSections] = useState({
     modelInfo: true,
     modelParams: true,
@@ -2952,6 +3340,19 @@ export default function BioassayCurveFitter() {
     color: compoundStyles[name]?.color ?? OVERLAY_COLORS[idx % OVERLAY_COLORS.length],
     shape: compoundStyles[name]?.shape ?? "circle",
   }), [compoundStyles]);
+
+  // Render a per-molecule chart to a data URL for the Report Builder
+  const renderMolChart = useCallback((molIndex) => {
+    if (!allFitResults || !allFitResults[molIndex]) return null;
+    const r = allFitResults[molIndex];
+    if (!r.xData?.length || !r.fitResult) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = 960; canvas.height = 640;
+    const cStyle = getCompoundStyle(r.name, molIndex);
+    drawChart(canvas, r.xData, r.yData, r.fitResult, r.modelType,
+      { pointView, errorBarType, compoundStyle: cStyle, yAxisFormat, yAxisDecimals, xAxisLog }, t);
+    return canvas.toDataURL("image/png");
+  }, [allFitResults, t, pointView, errorBarType, yAxisFormat, yAxisDecimals, xAxisLog, getCompoundStyle]);
 
   // Global drag tracking for the floating stats table
   useEffect(() => {
@@ -3442,7 +3843,8 @@ export default function BioassayCurveFitter() {
 
   // PDF Report Generation
   const generatePdfReport = useCallback(async () => {
-    if (!parsedData || !fitResult) return;
+    const isMulti = allFitResults?.length > 0;
+    if (!isMulti && (!parsedData || !fitResult)) return;
     setPdfGenerating(true);
     try {
       const { jsPDF } = await import("jspdf");
@@ -3461,6 +3863,235 @@ export default function BioassayCurveFitter() {
       const addKeyVal = (key, val) => { doc.setFontSize(9); doc.setFont("helvetica","bold"); doc.setTextColor(...dark); doc.text(key + ":", margin, y); doc.setFont("helvetica","normal"); doc.setTextColor(...gray); doc.text(String(val), margin + 35, y); y += lineH; };
       // Sanitize text for jsPDF (replace unsupported Unicode with ASCII)
       const sanitize = (s) => String(s).replace(/\u0394/g,"Delta ").replace(/\u2248/g,"~").replace(/--/g,"--").replace(/\u2019/g,"'").replace(/\u03B1/g,"alpha").replace(/\u00B2/g,"2").replace(/\u2265/g,">=").replace(/\u2264/g,"<=");
+
+      // ── Multi-molecule report ──────────────────────────────────────
+      if (isMulti) {
+        // Formatter using RB_STAT_COLUMNS for consistent sig figs across report
+        const fmtStat = (key, r) => {
+          const col = RB_STAT_COLUMNS.find(c => c.key === key);
+          return col ? sanitize(col.fmt(r)) : "--";
+        };
+        // Numeric formatter for raw data values (consistent across columns)
+        const fmtNum = (v) => (v == null || isNaN(v)) ? "--" : (Math.abs(v) < 0.01 || Math.abs(v) > 99999) ? v.toExponential(3) : v.toFixed(4);
+
+        // Header
+        addTitle("Bioassay Curve Fitting Report");
+        doc.setFontSize(8); doc.setTextColor(...gray); doc.setFont("helvetica","normal");
+        doc.text("Generated " + new Date().toLocaleString() + "  |  assaycurvefit.com  |  " + (typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev") + "  |  " + allFitResults.length + " molecules", margin, y); y += 8;
+
+        // ── Overlay chart ──
+        if (mainCanvasRef.current) {
+          addSection("Overlay View");
+          const oCanvas = mainCanvasRef.current;
+          const imgData = oCanvas.toDataURL("image/png");
+          const imgW = cw;
+          const imgH = Math.min((oCanvas.height / oCanvas.width) * imgW, 110);
+          if (y + imgH > 280) { doc.addPage(); y = margin; }
+          doc.addImage(imgData, "PNG", margin, y, imgW, imgH);
+          y += imgH + 4;
+        }
+
+        // ── Summary stats table ──
+        addSection("Molecule Summary");
+        const sumColKeys = ["name", ...statsTableCols];
+        // Column widths: name=42mm, rest split equally
+        const restCols = sumColKeys.filter(k => k !== "name");
+        const nameW = 42, restW = restCols.length > 0 ? (cw - nameW) / restCols.length : 0;
+        const colXs = sumColKeys.map((k, ci) => margin + (ci === 0 ? 0 : nameW + (ci - 1) * restW));
+
+        // Header row
+        doc.setFontSize(7.5); doc.setFont("helvetica","bold"); doc.setTextColor(...dark);
+        sumColKeys.forEach((key, ci) => {
+          const col = RB_STAT_COLUMNS.find(c => c.key === key);
+          const label = col ? col.label : key;
+          doc.text(label, colXs[ci], y);
+        });
+        y += 1;
+        doc.setDrawColor(180,180,180); doc.setLineWidth(0.2); doc.line(margin, y, margin + cw, y); y += 3;
+        doc.setFontSize(7); doc.setFont("helvetica","normal");
+
+        allFitResults.forEach((r, ri) => {
+          if (y > 275) { doc.addPage(); y = margin; }
+          const cs = getCompoundStyle(r.name, ri);
+          // Parse hex color → RGB for jsPDF
+          const hexToRgb = (hex) => { const h = hex.replace("#",""); return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; };
+          const [cr, cg, cb] = hexToRgb(cs.color || "#3b9eff");
+          sumColKeys.forEach((key, ci) => {
+            if (key === "name") {
+              // Colored bullet + name
+              doc.setTextColor(cr, cg, cb); doc.setFont("helvetica","bold");
+              doc.text("*", colXs[ci], y);
+              doc.setTextColor(...dark); doc.setFont("helvetica","normal");
+              const nameStr = r.name.length > 18 ? r.name.slice(0,17) + "…" : r.name;
+              doc.text(nameStr, colXs[ci] + 4, y);
+            } else {
+              doc.setTextColor(...gray); doc.setFont("helvetica","normal");
+              doc.text(fmtStat(key, r), colXs[ci], y);
+            }
+          });
+          y += 4;
+        });
+        y += 4;
+
+        // ── Per-molecule sections ──
+        allFitResults.forEach((r, ri) => {
+          // Each molecule starts on a new page
+          doc.addPage(); y = margin;
+
+          // Molecule header banner
+          const cs = getCompoundStyle(r.name, ri);
+          const hexToRgb = (hex) => { const h = hex.replace("#",""); return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; };
+          const [cr, cg, cb] = hexToRgb(cs.color || "#3b9eff");
+          doc.setFillColor(cr, cg, cb);
+          doc.rect(margin, y, 4, 12, "F");
+          doc.setFontSize(13); doc.setFont("helvetica","bold"); doc.setTextColor(...dark);
+          doc.text("Molecule: " + r.name, margin + 7, y + 8);
+          y += 16;
+
+          if (!r.fitResult) {
+            doc.setFontSize(9); doc.setTextColor(...gray); doc.setFont("helvetica","italic");
+            doc.text("Fit failed or insufficient data points.", margin, y); y += 8;
+            return; // continue to next molecule
+          }
+
+          // Model parameters
+          addSection("Model");
+          addKeyVal("Model Type", r.modelType || "--");
+          const pLabels = r.modelType === "5PL" ? ["Bottom","Hill","EC50","Top","S"] : ["A (min)","B (slope)","C (EC50)","D (max)"];
+          pLabels.forEach((label, pi) => {
+            const val = r.fitResult.params[pi];
+            if (val != null) addKeyVal(label, val.toExponential(4));
+          });
+          if (r.modelType === "5PL" && r.fitResult.bioEC50) {
+            addKeyVal("Bio EC50", r.fitResult.bioEC50.toExponential(4));
+          }
+          y += 2;
+
+          // Goodness of fit — use same sig figs as summary table via fmtStat
+          addSection("Goodness of Fit");
+          addKeyVal("R^2",    fmtStat("r2",   r));
+          addKeyVal("RMSE",   fmtStat("rmse", r));
+          addKeyVal("SSR",    fmtStat("ssr",  r));
+          addKeyVal("AICc",   fmtStat("aicc", r));
+          addKeyVal("BIC",    fmtStat("bic",  r));
+          if (r.fitResult.n != null)  addKeyVal("N data pts", String(r.fitResult.n));
+          if (r.fitResult.k != null)  addKeyVal("K params",   String(r.fitResult.k));
+          addKeyVal("Converged", r.fitResult.converged ? "Yes" : "No");
+          y += 2;
+
+          // Individual chart (offscreen canvas)
+          addSection("Fitted Curve");
+          const molCanvas = document.createElement("canvas");
+          molCanvas.width = 900; molCanvas.height = 500;
+          drawChart(molCanvas, r.xData, r.yData, r.fitResult, r.modelType,
+            { pointView, errorBarType, xAxisLog, yAxisFormat, yAxisDecimals }, t);
+          const molImgW = cw;
+          const molImgH = Math.min((molCanvas.height / molCanvas.width) * molImgW, 95);
+          if (y + molImgH > 280) { doc.addPage(); y = margin; }
+          doc.addImage(molCanvas.toDataURL("image/png"), "PNG", margin, y, molImgW, molImgH);
+          y += molImgH + 5;
+
+          // Raw data — pull from multiData[ri] for individual replicate values
+          const molData = multiData ? multiData[ri] : null;
+          if (molData?.points?.length > 0) {
+            if (y > 210) { doc.addPage(); y = margin; }
+            addSection("Raw Data");
+            doc.setFontSize(7); doc.setFont("helvetica","bold"); doc.setTextColor(...dark);
+            const cX = margin, cMean = margin + 24, cSD = margin + 50, cSEM = margin + 72, cCV = margin + 93, cN = margin + 114, cVals = margin + 122;
+            doc.text("Conc (M)", cX, y); doc.text("Mean", cMean, y); doc.text("SD", cSD, y); doc.text("SEM", cSEM, y); doc.text("%CV", cCV, y); doc.text("n", cN, y); doc.text("Values", cVals, y);
+            y += 1; doc.setDrawColor(180,180,180); doc.setLineWidth(0.2); doc.line(margin, y, margin + cw, y); y += 3;
+            doc.setFont("helvetica","normal"); doc.setTextColor(...gray); doc.setFontSize(6.5);
+            for (const pt of molData.points) {
+              if (y > 275) { doc.addPage(); y = margin; }
+              const reps = pt.reps;
+              const n = reps.length;
+              const mean = reps.reduce((a, b) => a + b, 0) / n;
+              const sd = n > 1 ? Math.sqrt(reps.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1)) : 0;
+              const sem = n > 1 ? sd / Math.sqrt(n) : 0;
+              const cv = mean !== 0 ? (sd / Math.abs(mean)) * 100 : 0;
+              const concM = Math.pow(10, pt.conc);
+              doc.text(concM.toExponential(3), cX, y);
+              doc.text(fmtNum(mean), cMean, y);
+              doc.text(n > 1 ? fmtNum(sd)  : "--", cSD,  y);
+              doc.text(n > 1 ? fmtNum(sem) : "--", cSEM, y);
+              doc.text(n > 1 ? cv.toFixed(1) + "%" : "--", cCV, y);
+              doc.text(String(n), cN, y);
+              const valStr = reps.map(v => fmtNum(v)).join(", ");
+              doc.text(valStr.length > 38 ? valStr.slice(0, 35) + "..." : valStr, cVals, y);
+              y += 3.5;
+            }
+            y += 3;
+          }
+
+          // Outlier analysis — run grubbsTest per concentration group
+          if (molData?.points?.length > 0) {
+            const grubbsGroups = molData.points.map(pt => {
+              const reps = pt.reps;
+              const concM = Math.pow(10, pt.conc);
+              if (reps.length < 3) return { conc: concM, n: reps.length, tested: false };
+              const result = grubbsTest(reps, grubbsAlpha);
+              const outlierCount = result.outliers.length;
+              return { conc: concM, n: reps.length, tested: true, result, outlierCount };
+            });
+            const hasAnyTested = grubbsGroups.some(g => g.tested);
+            if (hasAnyTested) {
+              if (y > 220) { doc.addPage(); y = margin; }
+              const totalOutliers = grubbsGroups.reduce((s, g) => s + (g.outlierCount || 0), 0);
+              addSection("Outlier Analysis (Grubbs, a=" + grubbsAlpha + ")");
+              addKeyVal("Total outliers", totalOutliers);
+              y += 2;
+              doc.setFontSize(7); doc.setFont("helvetica","bold"); doc.setTextColor(...dark);
+              doc.text("Conc (M)", margin, y); doc.text("n", margin + 26, y); doc.text("Outliers", margin + 36, y); doc.text("G stat", margin + 58, y); doc.text("G crit", margin + 78, y); doc.text("Result", margin + 98, y);
+              y += 1; doc.setDrawColor(180,180,180); doc.setLineWidth(0.2); doc.line(margin, y, margin + cw, y); y += 3;
+              doc.setFont("helvetica","normal"); doc.setTextColor(...gray); doc.setFontSize(7);
+              for (const gr of grubbsGroups) {
+                if (y > 275) { doc.addPage(); y = margin; }
+                const hasOutlier = gr.tested && gr.outlierCount > 0;
+                if (hasOutlier) {
+                  doc.setFillColor(255, 235, 235);
+                  doc.rect(margin - 1, y - 2.5, cw + 2, 3.5, "F");
+                  doc.setTextColor(180, 40, 40); doc.setFont("helvetica","bold");
+                } else {
+                  doc.setTextColor(...gray); doc.setFont("helvetica","normal");
+                }
+                doc.text(gr.conc.toExponential(3), margin, y);
+                doc.text(String(gr.n), margin + 26, y);
+                if (!gr.tested) {
+                  doc.setTextColor(...gray); doc.setFont("helvetica","normal");
+                  doc.text("n<3, skipped", margin + 36, y);
+                } else {
+                  const maxG = gr.result.details ? Math.max(...gr.result.details.map(d => d.g)) : 0;
+                  doc.text(String(gr.outlierCount), margin + 36, y);
+                  doc.text(maxG.toFixed(4), margin + 58, y);
+                  doc.text(gr.result.gCrit ? gr.result.gCrit.toFixed(4) : "--", margin + 78, y);
+                  doc.text(hasOutlier ? "OUTLIER" : "Pass", margin + 98, y);
+                }
+                y += 3.5;
+                if (hasOutlier && gr.result.outliers) {
+                  doc.setFontSize(6); doc.setTextColor(180, 40, 40); doc.setFont("helvetica","italic");
+                  const olVals = gr.result.outliers.map(o => fmtNum(o.value) + " (G=" + o.g.toFixed(3) + ")").join(", ");
+                  doc.text("  Flagged: " + olVals, margin + 4, y);
+                  y += 3; doc.setFontSize(7);
+                }
+              }
+              doc.setTextColor(...gray); doc.setFont("helvetica","normal");
+              y += 3;
+            }
+          }
+        });
+
+        // Footer
+        const pages = doc.getNumberOfPages();
+        for (let i = 1; i <= pages; i++) {
+          doc.setPage(i);
+          doc.setFontSize(7); doc.setTextColor(160,160,160); doc.setFont("helvetica","normal");
+          doc.text("assaycurvefit.com  |  Page " + i + " of " + pages, pw / 2, 290, { align: "center" });
+        }
+        doc.save("bioassay_multi_molecule_report.pdf");
+        return;
+      }
+
+      // ── Single-compound report (unchanged) ────────────────────────
 
       // Header
       addTitle("Bioassay Curve Fitting Report");
@@ -3653,7 +4284,7 @@ export default function BioassayCurveFitter() {
       setPdfGenerating(false);
       setShowPdfModal(false);
     }
-  }, [parsedData, fitResult, activeModel, comparison, grubbsResults, grubbsAlpha, pdfSections, fixedParams, t]);
+  }, [parsedData, fitResult, activeModel, comparison, grubbsResults, grubbsAlpha, pdfSections, fixedParams, t, allFitResults, multiData, statsTableCols, getCompoundStyle, pointView, errorBarType, xAxisLog, yAxisFormat, yAxisDecimals]);
 
   const interpolate = useCallback((targetY) => {
     if (!fitResult) return null;
@@ -4695,7 +5326,7 @@ export default function BioassayCurveFitter() {
                     letterSpacing: 0.5,
                   }}
                 >
-                  Builder
+                  PDF Builder
                 </button>
               </div>
             </div>
@@ -5838,6 +6469,8 @@ export default function BioassayCurveFitter() {
           activeModel={activeModel}
           allFitResults={allFitResults}
           getCompoundStyle={getCompoundStyle}
+          multiData={multiData}
+          renderMolChart={renderMolChart}
         />
       )}
     </div>
