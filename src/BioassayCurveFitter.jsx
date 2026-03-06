@@ -16,11 +16,11 @@ function parsePrismCSV(text) {
   const compoundMap = new Map();
   const compoundOrder = [];
   for (let i = 1; i < headers.length; i++) {
-    const name = headers[i] || `Compound ${i}`;
+    const name = headers[i] || `Molecule ${i}`;
     if (!compoundMap.has(name)) { compoundMap.set(name, []); compoundOrder.push(name); }
     compoundMap.get(name).push(i);
   }
-  if (compoundOrder.length === 0) throw new Error("No compound columns found.");
+  if (compoundOrder.length === 0) throw new Error("No molecule columns found.");
 
   const rows = lines.slice(1).map(l => l.split(",").map(v => v.trim()));
   const compounds = compoundOrder.map(name => {
@@ -54,7 +54,7 @@ function compoundToCSV(compound) {
 // Mirrors the structure of the test CSV: 3 compounds × 2 replicates, 8 concentrations
 function downloadMultiTemplate() {
   const logConcs = [-5.00, -5.50, -6.00, -6.50, -7.00, -7.49, -8.00, -8.52];
-  const header = "Concentration (M),Compound A,Compound A,Compound B,Compound B,Compound C,Compound C";
+  const header = "Concentration (M),Molecule A,Molecule A,Molecule B,Molecule B,Molecule C,Molecule C";
   const rows = logConcs.map(lc => {
     const molar = Math.pow(10, lc);
     // Write in scientific notation e.g. 1.00E-5 for clarity
@@ -65,7 +65,7 @@ function downloadMultiTemplate() {
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = "multi_compound_template.csv"; a.click();
+  a.href = url; a.download = "multi_molecule_template.csv"; a.click();
   URL.revokeObjectURL(url);
 }
 
@@ -1430,7 +1430,7 @@ function rbDrawTableToCanvas(ctx, item, rows, title) {
 // ── Compound summary table column definitions ─────────────────────
 // format(r) receives one entry from allFitResults: {name, fitResult, modelType}
 const RB_STAT_COLUMNS = [
-  { key: "name",     label: "Compound",   fmt: r => (r.name || "--").slice(0, 20) },
+  { key: "name",     label: "Molecule",   fmt: r => (r.name || "--").slice(0, 20) },
   { key: "ec50",     label: "EC50",       fmt: r => r.fitResult?.params?.[2] > 0 ? r.fitResult.params[2].toExponential(2) : "--" },
   { key: "bio_ec50", label: "Bio EC50",   fmt: r => r.fitResult?.bioEC50  > 0 ? r.fitResult.bioEC50.toExponential(2) : "--" },
   { key: "hill",     label: "Hill",       fmt: r => r.fitResult?.params?.[1] != null ? r.fitResult.params[1].toFixed(3) : "--" },
@@ -1708,7 +1708,7 @@ function RBPropertiesPanel({ item, onChange, onDelete, onDuplicate }) {
         <input type="text" value={item.title || ""} style={inp} onChange={e => onChange({ title: e.target.value })} />
       </>)}
 
-      {item.type === "stats-table" && sec("Compound Table", (() => {
+      {item.type === "stats-table" && sec("Molecule Table", (() => {
         const colKeys = item.columns?.length ? item.columns : RB_DEFAULT_COLUMNS;
         const usedKeys = new Set(colKeys);
         const available = RB_STAT_COLUMNS.filter(c => !usedKeys.has(c.key));
@@ -1806,7 +1806,7 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
     }
     if (allFitResults?.length > 0) {
       const tableY = chartDataUrl ? 448 : 114;
-      init.push({ id: id(), type: "stats-table", x: 40, y: tableY, width: pw - 80, height: Math.min(320, 46 + allFitResults.length * 22), data: allFitResults, title: "Compound Summary", columns: [...RB_DEFAULT_COLUMNS] });
+      init.push({ id: id(), type: "stats-table", x: 40, y: tableY, width: pw - 80, height: Math.min(320, 46 + allFitResults.length * 22), data: allFitResults, title: "Molecule Summary", columns: [...RB_DEFAULT_COLUMNS] });
     }
     return init;
   });
@@ -1837,7 +1837,7 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
       "heading":        { x: 40, y: 40, width: 420, height: 50,  content: "Section Heading", fontSize: 18, fontWeight: "bold",   fontStyle: "normal", color: "#0a1a3a", align: "left" },
       "fit-params":     { x: 40, y: 40, width: 260, height: 180, fitResult, modelType: activeModel, title: `${activeModel || "Fit"} Parameters` },
       "gof-table":      { x: 40, y: 40, width: 260, height: 210, fitResult, modelType: activeModel, title: "Goodness of Fit" },
-      "stats-table":    { x: 40, y: 40, width: pw - 80, height: 200, data: allFitResults, title: "Compound Summary", columns: [...RB_DEFAULT_COLUMNS] },
+      "stats-table":    { x: 40, y: 40, width: pw - 80, height: 200, data: allFitResults, title: "Molecule Summary", columns: [...RB_DEFAULT_COLUMNS] },
       "divider":        { x: 40, y: 200, width: pw - 80, height: 6, color: "#cccccc", thickness: 1 },
     };
     setItems(prev => [...prev, { id: newId, type, ...baseDefaults[type] }]);
@@ -1951,7 +1951,7 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
           overlayChartDataUrl && overlayChartDataUrl !== chartDataUrl   && ["overlay-chart", "+ Overlay"],
           fitResult                                                     && ["fit-params",    "+ Fit Params"],
           fitResult                                                     && ["gof-table",     "+ GoF Stats"],
-          allFitResults?.length > 0                                     && ["stats-table",   "+ Compound Table"],
+          allFitResults?.length > 0                                     && ["stats-table",   "+ Molecule Table"],
           ["divider", "+ Divider"],
         ].filter(Boolean).map(([type, label]) => (
           <button key={type} onClick={() => addItem(type)} style={tbStyle("rgba(25,38,72,0.8)", "rgba(60,100,160,0.3)")}>{label}</button>
@@ -3255,8 +3255,8 @@ export default function BioassayCurveFitter() {
   useEffect(() => {
     if (!multiData) return;
     loadCompound(multiData[multiIndex]);
-    setOverlayEditIndex(null);
-  }, [multiIndex, multiData]); // intentionally not including loadCompound to avoid stale closure loop
+    if (!overlayMode) setOverlayEditIndex(null);
+  }, [multiIndex, multiData, overlayMode]); // intentionally not including loadCompound to avoid stale closure loop
 
   // Pre-fit all compounds for overlay mode whenever multiData changes
   useEffect(() => {
@@ -3285,6 +3285,13 @@ export default function BioassayCurveFitter() {
     setSelectedCompounds(null); // reset to all-selected when new CSV loaded
     setOverlayEditIndex(null);  // reset overlay editing on new CSV
   }, [multiData, parseData]);
+
+  // Auto-select first molecule when entering overlay mode or loading a new CSV while overlay is active
+  useEffect(() => {
+    if (overlayMode && allFitResults?.length > 0 && overlayEditIndex === null) {
+      loadCompoundForOverlayEdit(0);
+    }
+  }, [allFitResults, overlayMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // While a compound is selected for overlay editing, propagate left-panel fit changes back to allFitResults.
   // This makes the overlay canvas update live when the user re-fits or switches model (View 4PL / View 5PL).
@@ -3446,7 +3453,7 @@ export default function BioassayCurveFitter() {
               {/* Multi-Compound CSV upload button */}
               <button
                 onClick={() => multiCsvRef.current && multiCsvRef.current.click()}
-                title="Load a Prism-style multi-compound CSV (duplicate headers = replicates)"
+                title="Load a Prism-style multi-molecule CSV (duplicate headers = replicates)"
                 style={{
                   padding: "2px 8px",
                   background: multiData ? "rgba(0,230,180,0.12)" : t.btnInactive,
@@ -3465,7 +3472,7 @@ export default function BioassayCurveFitter() {
               {/* Template download button */}
               <button
                 onClick={downloadMultiTemplate}
-                title="Download a blank multi-compound CSV template"
+                title="Download a blank multi-molecule CSV template"
                 style={{
                   padding: "2px 8px",
                   background: t.btnInactive,
@@ -3817,8 +3824,12 @@ export default function BioassayCurveFitter() {
               borderRadius: 10,
               padding: 16,
             }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
-                Model Comparison
+              <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span>Model Comparison</span>
+                {overlayMode && overlayEditIndex !== null && allFitResults?.[overlayEditIndex] && (() => {
+                  const c = getCompoundStyle(allFitResults[overlayEditIndex].name, overlayEditIndex).color;
+                  return <span style={{ fontSize: 9, color: c, fontWeight: 700, textTransform: "none", letterSpacing: 0, padding: "2px 6px", border: `1px solid ${c}55`, borderRadius: 4, background: `${c}18` }}>{allFitResults[overlayEditIndex].name}</span>;
+                })()}
               </div>
               
               {/* Comparison table */}
@@ -3909,21 +3920,36 @@ export default function BioassayCurveFitter() {
             </div>
           )}
 
-          {/* Overlay editing indicator */}
-          {overlayMode && overlayEditIndex !== null && allFitResults?.[overlayEditIndex] && (() => {
+          {/* Overlay molecule indicator */}
+          {overlayMode && (() => {
+            if (overlayEditIndex === null || !allFitResults?.[overlayEditIndex]) {
+              return (
+                <div style={{
+                  padding: "8px 12px",
+                  background: "rgba(60,100,160,0.07)",
+                  border: "1px dashed rgba(140,170,210,0.25)",
+                  borderRadius: 6,
+                  fontSize: 10,
+                  color: "rgba(160,190,230,0.5)",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  textAlign: "center",
+                }}>
+                  ← Click a molecule name in the list to view its fit details
+                </div>
+              );
+            }
             const editColor = getCompoundStyle(allFitResults[overlayEditIndex].name, overlayEditIndex).color;
             return (
               <div style={{
-                padding: "6px 10px",
-                border: `1px solid ${editColor}`,
+                padding: "8px 12px",
+                background: `${editColor}18`,
+                border: `1px solid ${editColor}55`,
+                borderLeft: `4px solid ${editColor}`,
                 borderRadius: 6,
-                fontSize: 10,
-                color: editColor,
-                fontFamily: "'JetBrains Mono', monospace",
-                display: "flex", alignItems: "center", gap: 6,
+                display: "flex", alignItems: "center", gap: 8,
               }}>
-                <span>✏</span>
-                <span>Editing overlay: <strong>{allFitResults[overlayEditIndex].name}</strong></span>
+                <span style={{ fontSize: 9, color: editColor, textTransform: "uppercase", letterSpacing: 1, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>Viewing</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: editColor, fontFamily: "'Space Grotesk', sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{allFitResults[overlayEditIndex].name}</span>
               </div>
             );
           })()}
@@ -3979,7 +4005,13 @@ export default function BioassayCurveFitter() {
             }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: t.label, marginBottom: 12, textTransform: "uppercase", letterSpacing: 1, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span>Fit Parameters</span>
-                <span style={{ color: activeModel === "5PL" ? t.purple : ["1PL","2PL"].includes(activeModel) ? t.orange : t.blue, fontSize: 10 }}>{activeModel}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  {overlayMode && overlayEditIndex !== null && allFitResults?.[overlayEditIndex] && (() => {
+                    const c = getCompoundStyle(allFitResults[overlayEditIndex].name, overlayEditIndex).color;
+                    return <span style={{ fontSize: 9, color: c, fontWeight: 700, textTransform: "none", letterSpacing: 0, padding: "2px 6px", border: `1px solid ${c}55`, borderRadius: 4, background: `${c}18` }}>{allFitResults[overlayEditIndex].name}</span>;
+                  })()}
+                  <span style={{ color: activeModel === "5PL" ? t.purple : ["1PL","2PL"].includes(activeModel) ? t.orange : t.blue, fontSize: 10 }}>{activeModel}</span>
+                </div>
               </div>
               {paramLabels.map((label, i) => (
                 <div key={i} style={{
@@ -4407,7 +4439,7 @@ export default function BioassayCurveFitter() {
                                 color: isSelected ? "#000" : "rgba(160,190,230,0.4)",
                                 display: "flex", alignItems: "center", justifyContent: "center",
                               }}
-                              title={isSelected ? "Hide compound" : "Show compound"}
+                              title={isSelected ? "Hide molecule" : "Show molecule"}
                             >{isSelected ? "✓" : ""}</button>
                             {/* Color picker */}
                             <input
@@ -4441,7 +4473,7 @@ export default function BioassayCurveFitter() {
                               tabIndex={0}
                               onClick={() => loadCompoundForOverlayEdit(i)}
                               onKeyDown={e => e.key === "Enter" && loadCompoundForOverlayEdit(i)}
-                              title="Click to edit this compound's fit in the left panel"
+                              title="Click to edit this molecule's fit in the left panel"
                               style={{
                                 fontSize: 10,
                                 fontFamily: "'JetBrains Mono', monospace",
@@ -4620,7 +4652,7 @@ export default function BioassayCurveFitter() {
                       alignItems: "center",
                     }}
                   >
-                    <span style={{ fontSize: 9, fontWeight: 700, color: t.teal || "#00e6b4", letterSpacing: 1 }}>COMPOUND STATS</span>
+                    <span style={{ fontSize: 9, fontWeight: 700, color: t.teal || "#00e6b4", letterSpacing: 1 }}>MOLECULE STATS</span>
                     <button
                       onClick={() => setStatsTableVisible(false)}
                       style={{ background: "none", border: "none", color: "rgba(160,190,230,0.5)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px" }}
@@ -4630,7 +4662,7 @@ export default function BioassayCurveFitter() {
                   <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse", padding: "4px 0" }}>
                     <thead>
                       <tr style={{ color: "rgba(160,190,230,0.45)", textAlign: "left" }}>
-                        {["Compound","EC50","Hill","R²","Model"].map(h => (
+                        {["Molecule","EC50","Hill","R²","Model"].map(h => (
                           <th key={h} style={{ padding: "4px 8px", fontWeight: 600 }}>{h}</th>
                         ))}
                       </tr>
@@ -4784,8 +4816,12 @@ export default function BioassayCurveFitter() {
               padding: 16,
             }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: t.label, textTransform: "uppercase", letterSpacing: 1 }}>
-                  Grubbs' Outlier Test
+                <div style={{ fontSize: 11, fontWeight: 600, color: t.label, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 8 }}>
+                  <span>Grubbs' Outlier Test</span>
+                  {overlayMode && overlayEditIndex !== null && allFitResults?.[overlayEditIndex] && (() => {
+                    const c = getCompoundStyle(allFitResults[overlayEditIndex].name, overlayEditIndex).color;
+                    return <span style={{ fontSize: 9, color: c, fontWeight: 700, textTransform: "none", letterSpacing: 0, padding: "2px 6px", border: `1px solid ${c}55`, borderRadius: 4, background: `${c}18` }}>{allFitResults[overlayEditIndex].name}</span>;
+                  })()}
                 </div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                   <span style={{ fontSize: 9, color: t.textDim }}>α =</span>
