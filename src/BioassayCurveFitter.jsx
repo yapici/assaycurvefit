@@ -617,7 +617,8 @@ function drawPoint(ctx, cx, cy, r, shape) {
 // ── Chart drawing ─────────────────────────────────────────────────
 function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, theme = {}) {
   const { pointView = "individual", errorBarType = "sd", outlierIndices = null, excludedIndices: exclSet = null,
-          compoundStyle = null, axisOverride = null, yAxisFormat = "decimal", yAxisDecimals = 2 } = options;
+          compoundStyle = null, axisOverride = null, yAxisFormat = "decimal", yAxisDecimals = 2,
+          xAxisLog = true } = options;
   const fmtY = v => yAxisFormat === "scientific" ? v.toExponential(yAxisDecimals) : v.toFixed(yAxisDecimals);
   const t = theme;
   const grouped = groupByConcentration(xData, yData);
@@ -631,16 +632,20 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
 
   const pad = { top: 30, right: 30, bottom: 55, left: 70 };
 
-  // Log scale for X
-  const logX = xData.filter(x => x > 0).map(x => Math.log10(x));
+  const posX = xData.filter(x => x > 0);
   const allY = [...yData];
 
   let xMin, xMax;
-  if (logX.length > 0) {
-    xMin = Math.floor(Math.min(...logX)) - 0.5;
-    xMax = Math.ceil(Math.max(...logX)) + 0.5;
+  if (xAxisLog) {
+    const logX = posX.map(x => Math.log10(x));
+    xMin = logX.length > 0 ? Math.floor(Math.min(...logX)) - 0.5 : -2;
+    xMax = logX.length > 0 ? Math.ceil(Math.max(...logX)) + 0.5 : 4;
   } else {
-    xMin = -2; xMax = 4;
+    const rawMin = posX.length > 0 ? Math.min(...posX) : 0;
+    const rawMax = posX.length > 0 ? Math.max(...posX) : 1;
+    const xPadR = (rawMax - rawMin) * 0.1 || rawMax * 0.1 || 1;
+    xMin = rawMin - xPadR;
+    xMax = rawMax + xPadR;
   }
 
   // Generate curve points for Y range
@@ -648,8 +653,8 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
   if (fitResult) {
     const modelFn = getModelFn(modelType);
     for (let i = 0; i <= 200; i++) {
-      const lx = xMin + (xMax - xMin) * (i / 200);
-      curveY.push(modelFn(Math.pow(10, lx), fitResult.params));
+      const u = xMin + (xMax - xMin) * (i / 200);
+      curveY.push(modelFn(xAxisLog ? Math.pow(10, u) : u, fitResult.params));
     }
   }
   const allYValues = [...allY, ...curveY];
@@ -684,7 +689,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
   const toCanvasY = (y) => pad.top + ((yMax - y) / (yMax - yMin)) * plotH;
 
   // Store coordinate metadata on canvas for tooltip hit-testing
-  canvas._chartMeta = { pad, plotW, plotH, xMin, xMax, yMin, yMax, W, H, toCanvasX, toCanvasY, errorBarGroups: [], theme: t };
+  canvas._chartMeta = { pad, plotW, plotH, xMin, xMax, yMin, yMax, W, H, toCanvasX, toCanvasY, errorBarGroups: [], theme: t, xAxisLog };
 
   // Background
   ctx.fillStyle = t.canvas || "#0a0f1a";
@@ -693,9 +698,17 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
   // Grid
   ctx.strokeStyle = t.grid || "rgba(100,140,180,0.08)";
   ctx.lineWidth = 1;
-  for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
-    const cx = toCanvasX(lx);
-    ctx.beginPath(); ctx.moveTo(cx, pad.top); ctx.lineTo(cx, pad.top + plotH); ctx.stroke();
+  const xTicks = 6;
+  if (xAxisLog) {
+    for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
+      const cx = toCanvasX(lx);
+      ctx.beginPath(); ctx.moveTo(cx, pad.top); ctx.lineTo(cx, pad.top + plotH); ctx.stroke();
+    }
+  } else {
+    for (let i = 0; i <= xTicks; i++) {
+      const cx = toCanvasX(xMin + (xMax - xMin) * (i / xTicks));
+      ctx.beginPath(); ctx.moveTo(cx, pad.top); ctx.lineTo(cx, pad.top + plotH); ctx.stroke();
+    }
   }
   const yTicks = 6;
   for (let i = 0; i <= yTicks; i++) {
@@ -716,8 +729,15 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
   ctx.fillStyle = t.axisLabel || "rgba(160,190,230,0.6)";
   ctx.font = "11px 'JetBrains Mono', monospace";
   ctx.textAlign = "center";
-  for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
-    ctx.fillText(`10^${lx}`, toCanvasX(lx), pad.top + plotH + 18);
+  if (xAxisLog) {
+    for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
+      ctx.fillText(`10^${lx}`, toCanvasX(lx), pad.top + plotH + 18);
+    }
+  } else {
+    for (let i = 0; i <= xTicks; i++) {
+      const x = xMin + (xMax - xMin) * (i / xTicks);
+      ctx.fillText(+x.toPrecision(3), toCanvasX(x), pad.top + plotH + 18);
+    }
   }
   ctx.textAlign = "right";
   for (let i = 0; i <= yTicks; i++) {
@@ -729,7 +749,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
   ctx.fillStyle = t.label || "rgba(180,210,240,0.7)";
   ctx.font = "12px 'JetBrains Mono', monospace";
   ctx.textAlign = "center";
-  ctx.fillText("Concentration (log scale)", pad.left + plotW / 2, H - 8);
+  ctx.fillText(xAxisLog ? "Concentration (log scale)" : "Concentration", pad.left + plotW / 2, H - 8);
   ctx.save();
   ctx.translate(16, pad.top + plotH / 2);
   ctx.rotate(-Math.PI / 2);
@@ -747,10 +767,10 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
     ctx.shadowBlur = 8;
     ctx.beginPath();
     for (let i = 0; i <= 200; i++) {
-      const lx = xMin + (xMax - xMin) * (i / 200);
-      const x = Math.pow(10, lx);
-      const y = modelFn(x, fitResult.params);
-      const cx = toCanvasX(lx), cy = toCanvasY(y);
+      const u = xMin + (xMax - xMin) * (i / 200);
+      const xVal = xAxisLog ? Math.pow(10, u) : u;
+      const y = modelFn(xVal, fitResult.params);
+      const cx = toCanvasX(u), cy = toCanvasY(y);
       if (i === 0) ctx.moveTo(cx, cy); else ctx.lineTo(cx, cy);
     }
     ctx.stroke();
@@ -759,17 +779,17 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
     // EC50 line
     const ec50 = fitResult.params[2];
     if (ec50 > 0) {
-      const lec50 = Math.log10(ec50);
-      if (lec50 >= xMin && lec50 <= xMax) {
+      const u50 = xAxisLog ? Math.log10(ec50) : ec50;
+      if (u50 >= xMin && u50 <= xMax) {
         const midY = modelFn(ec50, fitResult.params);
-        const cx = toCanvasX(lec50), cy = toCanvasY(midY);
+        const cx = toCanvasX(u50), cy = toCanvasY(midY);
         ctx.setLineDash([4, 4]);
         ctx.strokeStyle = t.orangeBorder || "rgba(255,180,50,0.5)";
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(cx, pad.top); ctx.lineTo(cx, pad.top + plotH); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(pad.left, cy); ctx.lineTo(pad.left + plotW, cy); ctx.stroke();
         ctx.setLineDash([]);
-        
+
         // EC50 marker
         ctx.fillStyle = t.orange || "rgba(255,180,50,0.9)";
         ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
@@ -784,10 +804,10 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
     if (modelType === "5PL" && fitResult.bioEC50) {
       const bioEc50 = fitResult.bioEC50;
       if (bioEc50 > 0) {
-        const lbec50 = Math.log10(bioEc50);
-        if (lbec50 >= xMin && lbec50 <= xMax) {
+        const ubec50 = xAxisLog ? Math.log10(bioEc50) : bioEc50;
+        if (ubec50 >= xMin && ubec50 <= xMax) {
           const midY = modelFn(bioEc50, fitResult.params);
-          const bx = toCanvasX(lbec50), by = toCanvasY(midY);
+          const bx = toCanvasX(ubec50), by = toCanvasY(midY);
           ctx.setLineDash([2, 3]);
           ctx.strokeStyle = (t.tealGlow || "rgba(0,230,180,") + "0.4)";
           ctx.lineWidth = 1;
@@ -825,8 +845,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
       const sem = n > 1 ? sd / Math.sqrt(n) : 0;
       const cv = mean !== 0 ? (sd / Math.abs(mean)) * 100 : 0;
 
-      const lx = Math.log10(g.x);
-      const cx = toCanvasX(lx);
+      const cx = toCanvasX(xAxisLog ? Math.log10(g.x) : g.x);
       const cyMean = toCanvasY(mean);
       const errVal = errorBarType === "sem" ? sem : sd;
       const cyHi = toCanvasY(mean + errVal);
@@ -858,8 +877,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
     const ptShape = compoundStyle?.shape ?? "circle";
     xData.forEach((x, i) => {
       if (x <= 0) return;
-      const lx = Math.log10(x);
-      const cx = toCanvasX(lx), cy = toCanvasY(yData[i]);
+      const cx = toCanvasX(xAxisLog ? Math.log10(x) : x), cy = toCanvasY(yData[i]);
       const isExcluded = exclSet && exclSet.has(i);
       const isOutlier = !isExcluded && outlierIndices && outlierIndices.has(i);
 
@@ -897,7 +915,8 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
 // ── Overlay chart (all compounds on one canvas) ───────────────────
 // overlayCompounds: [{ name, xData, yData, fitResult, modelType, color }, ...]
 function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
-  const { pointView = "individual", axisOverride = null, yAxisFormat = "decimal", yAxisDecimals = 2 } = options;
+  const { pointView = "individual", axisOverride = null, yAxisFormat = "decimal", yAxisDecimals = 2,
+          xAxisLog = true } = options;
   const fmtY = v => yAxisFormat === "scientific" ? v.toExponential(yAxisDecimals) : v.toFixed(yAxisDecimals);
   const t = theme;
   const ctx = canvas.getContext("2d");
@@ -911,15 +930,20 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
   const pad = { top: 30, right: 30, bottom: 55, left: 70 };
 
   // Compute axis ranges across all compounds
-  const allLogX = overlayCompounds.flatMap(c => c.xData.filter(x => x > 0).map(x => Math.log10(x)));
+  const allPosX = overlayCompounds.flatMap(c => c.xData.filter(x => x > 0));
   const allY = overlayCompounds.flatMap(c => c.yData);
 
   let xMin, xMax;
-  if (allLogX.length > 0) {
-    xMin = Math.floor(Math.min(...allLogX)) - 0.5;
-    xMax = Math.ceil(Math.max(...allLogX)) + 0.5;
+  if (xAxisLog) {
+    const allLogX = allPosX.map(x => Math.log10(x));
+    xMin = allLogX.length > 0 ? Math.floor(Math.min(...allLogX)) - 0.5 : -2;
+    xMax = allLogX.length > 0 ? Math.ceil(Math.max(...allLogX)) + 0.5 : 4;
   } else {
-    xMin = -2; xMax = 4;
+    const rawMin = allPosX.length > 0 ? Math.min(...allPosX) : 0;
+    const rawMax = allPosX.length > 0 ? Math.max(...allPosX) : 1;
+    const xPadR = (rawMax - rawMin) * 0.1 || rawMax * 0.1 || 1;
+    xMin = rawMin - xPadR;
+    xMax = rawMax + xPadR;
   }
 
   // Include curve Y values in range
@@ -928,8 +952,8 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
     const fn = getModelFn(c.modelType);
     const pts = [];
     for (let i = 0; i <= 100; i++) {
-      const lx = xMin + (xMax - xMin) * (i / 100);
-      pts.push(fn(Math.pow(10, lx), c.fitResult.params));
+      const u = xMin + (xMax - xMin) * (i / 100);
+      pts.push(fn(xAxisLog ? Math.pow(10, u) : u, c.fitResult.params));
     }
     return pts;
   });
@@ -962,7 +986,7 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
   const toCanvasX = (lx) => pad.left + ((lx - xMin) / (xMax - xMin)) * plotW;
   const toCanvasY = (y) => pad.top + ((yMax - y) / (yMax - yMin)) * plotH;
 
-  canvas._chartMeta = { pad, plotW, plotH, xMin, xMax, yMin, yMax, W, H, toCanvasX, toCanvasY, errorBarGroups: [], theme: t, isOverlay: true, overlayCompounds };
+  canvas._chartMeta = { pad, plotW, plotH, xMin, xMax, yMin, yMax, W, H, toCanvasX, toCanvasY, errorBarGroups: [], theme: t, isOverlay: true, overlayCompounds, xAxisLog };
 
   // Background
   ctx.fillStyle = t.canvas || "#0a0f1a";
@@ -971,9 +995,17 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
   // Grid
   ctx.strokeStyle = t.grid || "rgba(100,140,180,0.08)";
   ctx.lineWidth = 1;
-  for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
-    const cx = toCanvasX(lx);
-    ctx.beginPath(); ctx.moveTo(cx, pad.top); ctx.lineTo(cx, pad.top + plotH); ctx.stroke();
+  const xTicks = 6;
+  if (xAxisLog) {
+    for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
+      const cx = toCanvasX(lx);
+      ctx.beginPath(); ctx.moveTo(cx, pad.top); ctx.lineTo(cx, pad.top + plotH); ctx.stroke();
+    }
+  } else {
+    for (let i = 0; i <= xTicks; i++) {
+      const cx = toCanvasX(xMin + (xMax - xMin) * (i / xTicks));
+      ctx.beginPath(); ctx.moveTo(cx, pad.top); ctx.lineTo(cx, pad.top + plotH); ctx.stroke();
+    }
   }
   const yTicks = 6;
   for (let i = 0; i <= yTicks; i++) {
@@ -994,8 +1026,15 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
   ctx.fillStyle = t.axisLabel || "rgba(160,190,230,0.6)";
   ctx.font = "11px 'JetBrains Mono', monospace";
   ctx.textAlign = "center";
-  for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
-    ctx.fillText(`10^${lx}`, toCanvasX(lx), pad.top + plotH + 18);
+  if (xAxisLog) {
+    for (let lx = Math.ceil(xMin); lx <= Math.floor(xMax); lx++) {
+      ctx.fillText(`10^${lx}`, toCanvasX(lx), pad.top + plotH + 18);
+    }
+  } else {
+    for (let i = 0; i <= xTicks; i++) {
+      const x = xMin + (xMax - xMin) * (i / xTicks);
+      ctx.fillText(+x.toPrecision(3), toCanvasX(x), pad.top + plotH + 18);
+    }
   }
   ctx.textAlign = "right";
   for (let i = 0; i <= yTicks; i++) {
@@ -1007,7 +1046,7 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
   ctx.fillStyle = t.label || "rgba(180,210,240,0.7)";
   ctx.font = "12px 'JetBrains Mono', monospace";
   ctx.textAlign = "center";
-  ctx.fillText("Concentration (log scale)", pad.left + plotW / 2, H - 8);
+  ctx.fillText(xAxisLog ? "Concentration (log scale)" : "Concentration", pad.left + plotW / 2, H - 8);
   ctx.save();
   ctx.translate(16, pad.top + plotH / 2);
   ctx.rotate(-Math.PI / 2);
@@ -1036,10 +1075,10 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
       ctx.shadowBlur = 6;
       ctx.beginPath();
       for (let i = 0; i <= 200; i++) {
-        const lx = xMin + (xMax - xMin) * (i / 200);
-        const x = Math.pow(10, lx);
-        const y = modelFn(x, cFit.params);
-        const cx = toCanvasX(lx), cy = toCanvasY(y);
+        const u = xMin + (xMax - xMin) * (i / 200);
+        const xVal = xAxisLog ? Math.pow(10, u) : u;
+        const y = modelFn(xVal, cFit.params);
+        const cx = toCanvasX(u), cy = toCanvasY(y);
         if (i === 0) ctx.moveTo(cx, cy); else ctx.lineTo(cx, cy);
       }
       ctx.stroke();
@@ -1056,8 +1095,7 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
         const mean = g.values.reduce((a, b) => a + b, 0) / n;
         const variance = n > 1 ? g.values.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1) : 0;
         const sd = Math.sqrt(variance);
-        const lx = Math.log10(g.x);
-        const pcx = toCanvasX(lx);
+        const pcx = toCanvasX(xAxisLog ? Math.log10(g.x) : g.x);
         const cyMean = toCanvasY(mean);
         const cyHi = toCanvasY(mean + sd);
         const cyLo = toCanvasY(mean - sd);
@@ -1075,8 +1113,7 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
     } else {
       cX.forEach((x, i) => {
         if (x <= 0) return;
-        const lx = Math.log10(x);
-        const pcx = toCanvasX(lx), pcy = toCanvasY(cY[i]);
+        const pcx = toCanvasX(xAxisLog ? Math.log10(x) : x), pcy = toCanvasY(cY[i]);
         ctx.fillStyle = `rgba(${rgb},0.75)`;
         drawPoint(ctx, pcx, pcy, 3.5, compound.shape ?? "circle");
       });
@@ -2445,6 +2482,7 @@ export default function BioassayCurveFitter() {
   const [axisYMax, setAxisYMax] = useState("");
   const [yAxisFormat, setYAxisFormat] = useState("decimal"); // "decimal" | "scientific"
   const [yAxisDecimals, setYAxisDecimals] = useState(2);
+  const [xAxisLog, setXAxisLog] = useState(true);
 
   // ── Floating stats table state ──
   const [statsTablePos, setStatsTablePos] = useState({ x: 16, y: 16 });
@@ -2483,12 +2521,12 @@ export default function BioassayCurveFitter() {
       drawOverlayChart(
         mainCanvasRef.current,
         allFitResults.map((r, i) => ({ ...r, ...getCompoundStyle(r.name, i) })).filter(r => !selectedCompounds || selectedCompounds.has(r.name)),
-        { pointView, errorBarType, axisOverride: ao, yAxisFormat, yAxisDecimals },
+        { pointView, errorBarType, axisOverride: ao, yAxisFormat, yAxisDecimals, xAxisLog },
         t
       );
     } else if (parsedData) {
       const cStyle = multiData ? getCompoundStyle(multiData[multiIndex].name, multiIndex) : null;
-      drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices, compoundStyle: cStyle, axisOverride: ao, yAxisFormat, yAxisDecimals }, t);
+      drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices, compoundStyle: cStyle, axisOverride: ao, yAxisFormat, yAxisDecimals, xAxisLog }, t);
     } else {
       const canvas = mainCanvasRef.current;
       const ctx = canvas.getContext("2d");
@@ -2499,7 +2537,7 @@ export default function BioassayCurveFitter() {
       ctx.fillStyle = t.canvas || "#0a0f1a";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
-  }, [parsedData, fitResult, activeModel, pointView, errorBarType, chartOutlierIndices, excludedIndices, t, overlayMode, allFitResults, compoundStyles, axisXMin, axisXMax, axisYMin, axisYMax, yAxisFormat, yAxisDecimals, getCompoundStyle, multiData, multiIndex, selectedCompounds]);
+  }, [parsedData, fitResult, activeModel, pointView, errorBarType, chartOutlierIndices, excludedIndices, t, overlayMode, allFitResults, compoundStyles, axisXMin, axisXMax, axisYMin, axisYMax, yAxisFormat, yAxisDecimals, xAxisLog, getCompoundStyle, multiData, multiIndex, selectedCompounds]);
 
   useEffect(() => {
     if (residCanvasRef.current && parsedData && fitResult && showResiduals) {
@@ -2521,12 +2559,12 @@ export default function BioassayCurveFitter() {
           drawOverlayChart(
             mainCanvasRef.current,
             allFitResults.map((r, i) => ({ ...r, ...getCompoundStyle(r.name, i) })).filter(r => !selectedCompounds || selectedCompounds.has(r.name)),
-            { pointView, errorBarType, axisOverride: ao, yAxisFormat, yAxisDecimals },
+            { pointView, errorBarType, axisOverride: ao, yAxisFormat, yAxisDecimals, xAxisLog },
             t
           );
         } else if (parsedData) {
           const cStyle = multiData ? getCompoundStyle(multiData[multiIndex].name, multiIndex) : null;
-          drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices, compoundStyle: cStyle, axisOverride: ao, yAxisFormat, yAxisDecimals }, t);
+          drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices, compoundStyle: cStyle, axisOverride: ao, yAxisFormat, yAxisDecimals, xAxisLog }, t);
         }
       }
       if (residCanvasRef.current && parsedData && fitResult && showResiduals) {
@@ -2535,7 +2573,7 @@ export default function BioassayCurveFitter() {
     };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [parsedData, fitResult, activeModel, showResiduals, pointView, errorBarType, chartOutlierIndices, excludedIndices, t, overlayMode, allFitResults, compoundStyles, axisXMin, axisXMax, axisYMin, axisYMax, yAxisFormat, yAxisDecimals, getCompoundStyle, multiData, multiIndex, selectedCompounds]);
+  }, [parsedData, fitResult, activeModel, showResiduals, pointView, errorBarType, chartOutlierIndices, excludedIndices, t, overlayMode, allFitResults, compoundStyles, axisXMin, axisXMax, axisYMin, axisYMax, yAxisFormat, yAxisDecimals, xAxisLog, getCompoundStyle, multiData, multiIndex, selectedCompounds]);
 
   // Load a compound's CURRENT stored fit into the left panel (no re-fitting).
   // Used in overlay mode to select a compound for editing via the model panel.
@@ -4633,7 +4671,16 @@ export default function BioassayCurveFitter() {
 
             {/* Axis range override inputs */}
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 9, color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>X axis (log₁₀):</span>
+              <button
+                onClick={() => setXAxisLog(v => !v)}
+                style={{
+                  padding: "2px 7px", background: t.btnInactive,
+                  border: `1px solid ${t.panelBorder}`, borderRadius: 4,
+                  color: xAxisLog ? t.teal || "#00e6b4" : t.textMuted,
+                  fontSize: 9, cursor: "pointer", fontFamily: "'JetBrains Mono', monospace",
+                }}
+              >{xAxisLog ? "Log X" : "Linear X"}</button>
+              <span style={{ fontSize: 9, color: t.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>{xAxisLog ? "X (log₁₀):" : "X range:"}</span>
               {[["xMin", axisXMin, setAxisXMin, "auto"], ["xMax", axisXMax, setAxisXMax, "auto"]].map(([key, val, setter, ph]) => (
                 <input
                   key={key}
