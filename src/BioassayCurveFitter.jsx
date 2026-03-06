@@ -617,7 +617,8 @@ function drawPoint(ctx, cx, cy, r, shape) {
 // ── Chart drawing ─────────────────────────────────────────────────
 function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, theme = {}) {
   const { pointView = "individual", errorBarType = "sd", outlierIndices = null, excludedIndices: exclSet = null,
-          compoundStyle = null, axisOverride = null } = options;
+          compoundStyle = null, axisOverride = null, yAxisFormat = "decimal", yAxisDecimals = 2 } = options;
+  const fmtY = v => yAxisFormat === "scientific" ? v.toExponential(yAxisDecimals) : v.toFixed(yAxisDecimals);
   const t = theme;
   const grouped = groupByConcentration(xData, yData);
   const ctx = canvas.getContext("2d");
@@ -629,13 +630,11 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
   const W = rect.width, H = rect.height;
 
   const pad = { top: 30, right: 30, bottom: 55, left: 70 };
-  const plotW = W - pad.left - pad.right;
-  const plotH = H - pad.top - pad.bottom;
 
   // Log scale for X
   const logX = xData.filter(x => x > 0).map(x => Math.log10(x));
   const allY = [...yData];
-  
+
   let xMin, xMax;
   if (logX.length > 0) {
     xMin = Math.floor(Math.min(...logX)) - 0.5;
@@ -643,7 +642,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
   } else {
     xMin = -2; xMax = 4;
   }
-  
+
   // Generate curve points for Y range
   const curveY = [];
   if (fitResult) {
@@ -668,6 +667,18 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
     if (axisOverride.yMin != null && !isNaN(axisOverride.yMin)) yMin = axisOverride.yMin;
     if (axisOverride.yMax != null && !isNaN(axisOverride.yMax)) yMax = axisOverride.yMax;
   }
+
+  // Measure max Y-axis label width and expand left padding to prevent overlap with axis title
+  ctx.font = "11px 'JetBrains Mono', monospace";
+  let _maxYW = 0;
+  for (let i = 0; i <= 6; i++) {
+    const _y = yMin + (yMax - yMin) * (i / 6);
+    _maxYW = Math.max(_maxYW, ctx.measureText(fmtY(_y)).width);
+  }
+  pad.left = Math.max(70, Math.ceil(_maxYW) + 38);
+
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
 
   const toCanvasX = (lx) => pad.left + ((lx - xMin) / (xMax - xMin)) * plotW;
   const toCanvasY = (y) => pad.top + ((yMax - y) / (yMax - yMin)) * plotH;
@@ -711,7 +722,7 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
   ctx.textAlign = "right";
   for (let i = 0; i <= yTicks; i++) {
     const y = yMin + (yMax - yMin) * (i / yTicks);
-    ctx.fillText(y.toFixed(2), pad.left - 8, toCanvasY(y) + 4);
+    ctx.fillText(fmtY(y), pad.left - 8, toCanvasY(y) + 4);
   }
 
   // Axis titles
@@ -886,7 +897,8 @@ function drawChart(canvas, xData, yData, fitResult, modelType, options = {}, the
 // ── Overlay chart (all compounds on one canvas) ───────────────────
 // overlayCompounds: [{ name, xData, yData, fitResult, modelType, color }, ...]
 function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
-  const { pointView = "individual", axisOverride = null } = options;
+  const { pointView = "individual", axisOverride = null, yAxisFormat = "decimal", yAxisDecimals = 2 } = options;
+  const fmtY = v => yAxisFormat === "scientific" ? v.toExponential(yAxisDecimals) : v.toFixed(yAxisDecimals);
   const t = theme;
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
@@ -897,8 +909,6 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
   const W = rect.width, H = rect.height;
 
   const pad = { top: 30, right: 30, bottom: 55, left: 70 };
-  const plotW = W - pad.left - pad.right;
-  const plotH = H - pad.top - pad.bottom;
 
   // Compute axis ranges across all compounds
   const allLogX = overlayCompounds.flatMap(c => c.xData.filter(x => x > 0).map(x => Math.log10(x)));
@@ -936,6 +946,18 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
     if (axisOverride.yMin != null && !isNaN(axisOverride.yMin)) yMin = axisOverride.yMin;
     if (axisOverride.yMax != null && !isNaN(axisOverride.yMax)) yMax = axisOverride.yMax;
   }
+
+  // Measure max Y-axis label width and expand left padding to prevent overlap with axis title
+  ctx.font = "11px 'JetBrains Mono', monospace";
+  let _maxYW = 0;
+  for (let i = 0; i <= 6; i++) {
+    const _y = yMin + (yMax - yMin) * (i / 6);
+    _maxYW = Math.max(_maxYW, ctx.measureText(fmtY(_y)).width);
+  }
+  pad.left = Math.max(70, Math.ceil(_maxYW) + 38);
+
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
 
   const toCanvasX = (lx) => pad.left + ((lx - xMin) / (xMax - xMin)) * plotW;
   const toCanvasY = (y) => pad.top + ((yMax - y) / (yMax - yMin)) * plotH;
@@ -978,7 +1000,7 @@ function drawOverlayChart(canvas, overlayCompounds, options = {}, theme = {}) {
   ctx.textAlign = "right";
   for (let i = 0; i <= yTicks; i++) {
     const y = yMin + (yMax - yMin) * (i / yTicks);
-    ctx.fillText(y.toFixed(2), pad.left - 8, toCanvasY(y) + 4);
+    ctx.fillText(fmtY(y), pad.left - 8, toCanvasY(y) + 4);
   }
 
   // Axis titles
@@ -2421,6 +2443,8 @@ export default function BioassayCurveFitter() {
   const [axisXMax, setAxisXMax] = useState("");
   const [axisYMin, setAxisYMin] = useState("");
   const [axisYMax, setAxisYMax] = useState("");
+  const [yAxisFormat, setYAxisFormat] = useState("decimal"); // "decimal" | "scientific"
+  const [yAxisDecimals, setYAxisDecimals] = useState(2);
 
   // ── Floating stats table state ──
   const [statsTablePos, setStatsTablePos] = useState({ x: 16, y: 16 });
@@ -2459,12 +2483,12 @@ export default function BioassayCurveFitter() {
       drawOverlayChart(
         mainCanvasRef.current,
         allFitResults.map((r, i) => ({ ...r, ...getCompoundStyle(r.name, i) })).filter(r => !selectedCompounds || selectedCompounds.has(r.name)),
-        { pointView, errorBarType, axisOverride: ao },
+        { pointView, errorBarType, axisOverride: ao, yAxisFormat, yAxisDecimals },
         t
       );
     } else if (parsedData) {
       const cStyle = multiData ? getCompoundStyle(multiData[multiIndex].name, multiIndex) : null;
-      drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices, compoundStyle: cStyle, axisOverride: ao }, t);
+      drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices, compoundStyle: cStyle, axisOverride: ao, yAxisFormat, yAxisDecimals }, t);
     } else {
       const canvas = mainCanvasRef.current;
       const ctx = canvas.getContext("2d");
@@ -2475,7 +2499,7 @@ export default function BioassayCurveFitter() {
       ctx.fillStyle = t.canvas || "#0a0f1a";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
-  }, [parsedData, fitResult, activeModel, pointView, errorBarType, chartOutlierIndices, excludedIndices, t, overlayMode, allFitResults, compoundStyles, axisXMin, axisXMax, axisYMin, axisYMax, getCompoundStyle, multiData, multiIndex, selectedCompounds]);
+  }, [parsedData, fitResult, activeModel, pointView, errorBarType, chartOutlierIndices, excludedIndices, t, overlayMode, allFitResults, compoundStyles, axisXMin, axisXMax, axisYMin, axisYMax, yAxisFormat, yAxisDecimals, getCompoundStyle, multiData, multiIndex, selectedCompounds]);
 
   useEffect(() => {
     if (residCanvasRef.current && parsedData && fitResult && showResiduals) {
@@ -2497,12 +2521,12 @@ export default function BioassayCurveFitter() {
           drawOverlayChart(
             mainCanvasRef.current,
             allFitResults.map((r, i) => ({ ...r, ...getCompoundStyle(r.name, i) })).filter(r => !selectedCompounds || selectedCompounds.has(r.name)),
-            { pointView, errorBarType, axisOverride: ao },
+            { pointView, errorBarType, axisOverride: ao, yAxisFormat, yAxisDecimals },
             t
           );
         } else if (parsedData) {
           const cStyle = multiData ? getCompoundStyle(multiData[multiIndex].name, multiIndex) : null;
-          drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices, compoundStyle: cStyle, axisOverride: ao }, t);
+          drawChart(mainCanvasRef.current, parsedData.xData, parsedData.yData, fitResult, activeModel, { pointView, errorBarType, outlierIndices: chartOutlierIndices, excludedIndices, compoundStyle: cStyle, axisOverride: ao, yAxisFormat, yAxisDecimals }, t);
         }
       }
       if (residCanvasRef.current && parsedData && fitResult && showResiduals) {
@@ -2511,7 +2535,7 @@ export default function BioassayCurveFitter() {
     };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [parsedData, fitResult, activeModel, showResiduals, pointView, errorBarType, chartOutlierIndices, excludedIndices, t, overlayMode, allFitResults, compoundStyles, axisXMin, axisXMax, axisYMin, axisYMax, getCompoundStyle, multiData, multiIndex, selectedCompounds]);
+  }, [parsedData, fitResult, activeModel, showResiduals, pointView, errorBarType, chartOutlierIndices, excludedIndices, t, overlayMode, allFitResults, compoundStyles, axisXMin, axisXMax, axisYMin, axisYMax, yAxisFormat, yAxisDecimals, getCompoundStyle, multiData, multiIndex, selectedCompounds]);
 
   // Load a compound's CURRENT stored fit into the left panel (no re-fitting).
   // Used in overlay mode to select a compound for editing via the model panel.
@@ -4652,6 +4676,37 @@ export default function BioassayCurveFitter() {
                   }}
                 >↺ Auto</button>
               )}
+              <span style={{ fontSize: 9, color: t.textMuted, fontFamily: "'JetBrains Mono', monospace", marginLeft: 6 }}>Y fmt:</span>
+              <button
+                onClick={() => setYAxisFormat(f => f === "decimal" ? "scientific" : "decimal")}
+                style={{
+                  padding: "2px 7px", background: t.btnInactive,
+                  border: `1px solid ${t.panelBorder}`, borderRadius: 4,
+                  color: yAxisFormat === "scientific" ? t.teal || "#00e6b4" : t.textMuted,
+                  fontSize: 9, cursor: "pointer", fontFamily: "'JetBrains Mono', monospace",
+                }}
+              >{yAxisFormat === "scientific" ? "Sci" : "Dec"}</button>
+              <button
+                onClick={() => setYAxisDecimals(d => Math.max(0, d - 1))}
+                disabled={yAxisDecimals <= 0}
+                style={{
+                  padding: "2px 5px", background: t.btnInactive,
+                  border: `1px solid ${t.panelBorder}`, borderRadius: 4,
+                  color: t.textMuted, fontSize: 9, cursor: "pointer",
+                  fontFamily: "'JetBrains Mono', monospace",
+                }}
+              >−</button>
+              <span style={{ fontSize: 9, color: t.text, fontFamily: "'JetBrains Mono', monospace", minWidth: 10, textAlign: "center" }}>{yAxisDecimals}</span>
+              <button
+                onClick={() => setYAxisDecimals(d => Math.min(6, d + 1))}
+                disabled={yAxisDecimals >= 6}
+                style={{
+                  padding: "2px 5px", background: t.btnInactive,
+                  border: `1px solid ${t.panelBorder}`, borderRadius: 4,
+                  color: t.textMuted, fontSize: 9, cursor: "pointer",
+                  fontFamily: "'JetBrains Mono', monospace",
+                }}
+              >+</button>
             </div>
           </div>
 
