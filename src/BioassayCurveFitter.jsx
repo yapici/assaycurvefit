@@ -623,6 +623,7 @@ function GraphPopup({
   xAxisLog, setXAxisLog, yAxisFormat, setYAxisFormat, yAxisDecimals, setYAxisDecimals,
   axisXMin, setAxisXMin, axisXMax, setAxisXMax, axisYMin, setAxisYMin, axisYMax, setAxisYMax,
   statsTableVisible, setStatsTableVisible, statsTablePos, setStatsTablePos,
+  statsTableCols, setStatsTableCols, statsColPickerOpen, setStatsColPickerOpen,
   theme: t,
 }) {
   const canvasRef = useRef(null);
@@ -715,7 +716,7 @@ function GraphPopup({
     // Draw molecule stats table on top if visible
     if (overlayMode && statsTableVisible && allFitResults?.length > 0) {
       const dpr = canvas.width / canvas.getBoundingClientRect().width;
-      drawStatsTableOnCanvas(ctx, statsTablePos, allFitResults, selectedCompounds, overlayEditIndex, getCompoundStyle, dpr);
+      drawStatsTableOnCanvas(ctx, statsTablePos, allFitResults, selectedCompounds, overlayEditIndex, getCompoundStyle, dpr, statsTableCols);
     }
     const a = document.createElement("a");
     a.href = out.toDataURL(mimeType, quality);
@@ -855,7 +856,7 @@ function GraphPopup({
               border: "1px solid rgba(140,170,210,0.2)",
               borderRadius: 8,
               zIndex: 20,
-              minWidth: 260,
+              minWidth: 220,
               backdropFilter: "blur(8px)",
               userSelect: "none",
               fontFamily: "'JetBrains Mono', monospace",
@@ -868,30 +869,72 @@ function GraphPopup({
                 style={{
                   cursor: "grab", padding: "5px 10px",
                   borderBottom: "1px solid rgba(140,170,210,0.12)",
-                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6,
                 }}
               >
                 <span style={{ fontSize: 9, fontWeight: 700, color: teal, letterSpacing: 1 }}>MOLECULE STATS</span>
-                <button
-                  onClick={() => setStatsTableVisible(false)}
-                  style={{ background: "none", border: "none", color: "rgba(160,190,230,0.5)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px" }}
-                >×</button>
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <div style={{ position: "relative" }}>
+                    <button
+                      onMouseDown={e => e.stopPropagation()}
+                      onClick={() => setStatsColPickerOpen(v => !v)}
+                      title="Choose columns"
+                      style={{ background: "none", border: "none", color: statsColPickerOpen ? teal : "rgba(160,190,230,0.45)", cursor: "pointer", fontSize: 11, lineHeight: 1, padding: "0 3px" }}
+                    >⊞</button>
+                    {statsColPickerOpen && (
+                      <div
+                        onMouseDown={e => e.stopPropagation()}
+                        style={{
+                          position: "absolute", right: 0, top: "100%", marginTop: 4,
+                          background: "rgba(12,18,32,0.97)", border: "1px solid rgba(140,170,210,0.25)",
+                          borderRadius: 6, padding: "6px 0", zIndex: 50, minWidth: 130,
+                          boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+                        }}
+                      >
+                        {RB_STAT_COLUMNS.filter(c => c.key !== "name").map(col => (
+                          <label
+                            key={col.key}
+                            style={{
+                              display: "flex", alignItems: "center", gap: 7,
+                              padding: "3px 10px", cursor: "pointer",
+                              color: statsTableCols.includes(col.key) ? "rgba(200,220,250,0.9)" : "rgba(140,170,210,0.45)",
+                              fontSize: 10,
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={statsTableCols.includes(col.key)}
+                              onChange={() => setStatsTableCols(prev =>
+                                prev.includes(col.key) ? prev.filter(k => k !== col.key) : [...prev, col.key]
+                              )}
+                              style={{ accentColor: teal, width: 11, height: 11 }}
+                            />
+                            {col.label}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={() => setStatsTableVisible(false)}
+                    style={{ background: "none", border: "none", color: "rgba(160,190,230,0.5)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px" }}
+                  >×</button>
+                </div>
               </div>
               <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse", padding: "4px 0" }}>
                 <thead>
                   <tr style={{ color: "rgba(160,190,230,0.45)", textAlign: "left" }}>
-                    {["Molecule", "EC50", "Hill", "R²", "Model"].map(h => (
-                      <th key={h} style={{ padding: "4px 8px", fontWeight: 600 }}>{h}</th>
-                    ))}
+                    <th style={{ padding: "4px 8px", fontWeight: 600 }}>Molecule</th>
+                    {statsTableCols.map(key => {
+                      const col = RB_STAT_COLUMNS.find(c => c.key === key);
+                      return col ? <th key={key} style={{ padding: "4px 8px", fontWeight: 600 }}>{col.label}</th> : null;
+                    })}
                   </tr>
                 </thead>
                 <tbody>
                   {allFitResults.map((r, i) => ({ r, i })).filter(({ r }) => !selectedCompounds || selectedCompounds.has(r.name)).map(({ r, i }) => {
                     const s = getCompoundStyle(r.name, i);
-                    const p = r.fitResult?.params;
-                    const ec50 = p?.[2];
-                    const hill = p?.[1];
-                    const r2val = r.fitResult?.r2;
                     return (
                       <tr
                         key={r.name}
@@ -906,10 +949,15 @@ function GraphPopup({
                           <span style={{ color: s.color }}>●</span>{" "}
                           <span style={{ color: "rgba(200,220,250,0.8)" }}>{r.name.length > 12 ? r.name.slice(0, 11) + "…" : r.name}</span>
                         </td>
-                        <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{ec50 > 0 ? ec50.toExponential(2) : "—"}</td>
-                        <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{hill != null ? hill.toFixed(2) : "—"}</td>
-                        <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{r2val != null ? r2val.toFixed(3) : "—"}</td>
-                        <td style={{ padding: "3px 8px", color: "rgba(160,190,230,0.4)" }}>{r.modelType || "—"}</td>
+                        {statsTableCols.map(key => {
+                          const col = RB_STAT_COLUMNS.find(c => c.key === key);
+                          const isDim = key === "model" || key === "n";
+                          return col ? (
+                            <td key={key} style={{ padding: "3px 8px", color: isDim ? "rgba(160,190,230,0.4)" : "rgba(200,220,250,0.7)" }}>
+                              {col.fmt(r)}
+                            </td>
+                          ) : null;
+                        })}
                       </tr>
                     );
                   })}
@@ -927,8 +975,15 @@ function GraphPopup({
   );
 }
 
+// Column width hints for canvas rendering (pixels before DPR scaling)
+const STATS_COL_WIDTHS = {
+  name: 100, ec50: 68, bio_ec50: 68, hill: 44, top: 50, bottom: 58,
+  s_param: 44, r2: 48, rmse: 58, aicc: 48, bic: 44, ssr: 58, model: 44, n: 28,
+};
+
 // ── Molecule stats table canvas renderer (used for PNG/JPEG export) ───
-function drawStatsTableOnCanvas(ctx, tablePos, allFitResults, selectedCompounds, overlayEditIndex, getCompoundStyle, dpr) {
+function drawStatsTableOnCanvas(ctx, tablePos, allFitResults, selectedCompounds, overlayEditIndex, getCompoundStyle, dpr, activeCols) {
+  const colKeys = ["name", ...(activeCols || ["ec50", "hill", "r2", "model"])];
   const s = dpr;
   const x = Math.round(tablePos.x * s);
   const y = Math.round(tablePos.y * s);
@@ -936,13 +991,10 @@ function drawStatsTableOnCanvas(ctx, tablePos, allFitResults, selectedCompounds,
   const dragH = 22 * s;
   const colH = 18 * s;
   const rowH = 19 * s;
-  const COLS = [
-    { label: "Molecule", w: 100 * s },
-    { label: "EC50",     w: 65 * s },
-    { label: "Hill",     w: 40 * s },
-    { label: "R²",       w: 44 * s },
-    { label: "Model",    w: 40 * s },
-  ];
+  const COLS = colKeys.map(key => {
+    const def = RB_STAT_COLUMNS.find(c => c.key === key);
+    return { key, label: def?.label ?? key, w: (STATS_COL_WIDTHS[key] ?? 60) * s, fmt: def?.fmt };
+  });
   const tableW = COLS.reduce((sum, c) => sum + c.w, 0) + padX;
   const filteredRows = allFitResults.map((r, i) => ({ r, i })).filter(({ r }) => !selectedCompounds || selectedCompounds.has(r.name));
   const totalH = dragH + colH + filteredRows.length * rowH + 4 * s;
@@ -997,28 +1049,19 @@ function drawStatsTableOnCanvas(ctx, tablePos, allFitResults, selectedCompounds,
     ctx.beginPath(); ctx.moveTo(x, ry); ctx.lineTo(x + tableW, ry); ctx.stroke();
 
     const style = getCompoundStyle(r.name, globalIdx);
-    const p = r.fitResult?.params;
-    const ec50 = p?.[2];
-    const hill = p?.[1];
-    const r2val = r.fitResult?.r2;
-    const cells = [
-      r.name.length > 12 ? r.name.slice(0, 11) + "…" : r.name,
-      ec50 > 0 ? ec50.toExponential(2) : "—",
-      hill != null ? hill.toFixed(2) : "—",
-      r2val != null ? r2val.toFixed(3) : "—",
-      r.modelType || "—",
-    ];
     ctx.font = `${9 * s}px 'JetBrains Mono', monospace`;
     cx = x + padX;
-    COLS.forEach((col, ci) => {
-      if (ci === 0) {
+    COLS.forEach((col) => {
+      if (col.key === "name") {
         ctx.fillStyle = style.color;
         ctx.fillText("●", cx, ry + rowH / 2);
+        const nameStr = r.name.length > 12 ? r.name.slice(0, 11) + "…" : r.name;
         ctx.fillStyle = "rgba(200,220,250,0.85)";
-        ctx.fillText(cells[0], cx + 11 * s, ry + rowH / 2);
+        ctx.fillText(nameStr, cx + 11 * s, ry + rowH / 2);
       } else {
-        ctx.fillStyle = ci < 4 ? "rgba(200,220,250,0.75)" : "rgba(160,190,230,0.45)";
-        ctx.fillText(cells[ci], cx, ry + rowH / 2);
+        const val = col.fmt ? col.fmt(r) : "—";
+        ctx.fillStyle = col.key === "model" || col.key === "n" ? "rgba(160,190,230,0.45)" : "rgba(200,220,250,0.75)";
+        ctx.fillText(val, cx, ry + rowH / 2);
       }
       cx += col.w;
     });
@@ -2900,6 +2943,8 @@ export default function BioassayCurveFitter() {
   // ── Floating stats table state ──
   const [statsTablePos, setStatsTablePos] = useState({ x: 16, y: 16 });
   const [statsTableVisible, setStatsTableVisible] = useState(true);
+  const [statsTableCols, setStatsTableCols] = useState(["ec50", "hill", "r2", "model"]);
+  const [statsColPickerOpen, setStatsColPickerOpen] = useState(false);
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, startPosX: 0, startPosY: 0 });
 
   // Returns { color, shape } for a compound, falling back to defaults
@@ -3385,7 +3430,7 @@ export default function BioassayCurveFitter() {
       ctx.drawImage(canvas, 0, 0);
       if (needsStatsTable) {
         const dpr = canvas.width / canvas.getBoundingClientRect().width;
-        drawStatsTableOnCanvas(ctx, statsTablePos, allFitResults, selectedCompounds, overlayEditIndex, getCompoundStyle, dpr);
+        drawStatsTableOnCanvas(ctx, statsTablePos, allFitResults, selectedCompounds, overlayEditIndex, getCompoundStyle, dpr, statsTableCols);
       }
     }
     const dataUrl = exportCanvas.toDataURL(mimeType, quality);
@@ -5068,7 +5113,7 @@ export default function BioassayCurveFitter() {
                   border: "1px solid rgba(140,170,210,0.2)",
                   borderRadius: 8,
                   zIndex: 20,
-                  minWidth: 260,
+                  minWidth: 220,
                   backdropFilter: "blur(8px)",
                   userSelect: "none",
                   fontFamily: "'JetBrains Mono', monospace",
@@ -5086,30 +5131,74 @@ export default function BioassayCurveFitter() {
                       display: "flex",
                       justifyContent: "space-between",
                       alignItems: "center",
+                      gap: 6,
                     }}
                   >
                     <span style={{ fontSize: 9, fontWeight: 700, color: t.teal || "#00e6b4", letterSpacing: 1 }}>MOLECULE STATS</span>
-                    <button
-                      onClick={() => setStatsTableVisible(false)}
-                      style={{ background: "none", border: "none", color: "rgba(160,190,230,0.5)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px" }}
-                    >×</button>
+                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                      {/* Column picker toggle */}
+                      <div style={{ position: "relative" }}>
+                        <button
+                          onMouseDown={e => e.stopPropagation()}
+                          onClick={() => setStatsColPickerOpen(v => !v)}
+                          title="Choose columns"
+                          style={{ background: "none", border: "none", color: statsColPickerOpen ? (t.teal || "#00e6b4") : "rgba(160,190,230,0.45)", cursor: "pointer", fontSize: 11, lineHeight: 1, padding: "0 3px" }}
+                        >⊞</button>
+                        {statsColPickerOpen && (
+                          <div
+                            onMouseDown={e => e.stopPropagation()}
+                            style={{
+                              position: "absolute", right: 0, top: "100%", marginTop: 4,
+                              background: "rgba(12,18,32,0.97)", border: "1px solid rgba(140,170,210,0.25)",
+                              borderRadius: 6, padding: "6px 0", zIndex: 50, minWidth: 130,
+                              boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+                            }}
+                          >
+                            {RB_STAT_COLUMNS.filter(c => c.key !== "name").map(col => (
+                              <label
+                                key={col.key}
+                                style={{
+                                  display: "flex", alignItems: "center", gap: 7,
+                                  padding: "3px 10px", cursor: "pointer",
+                                  color: statsTableCols.includes(col.key) ? "rgba(200,220,250,0.9)" : "rgba(140,170,210,0.45)",
+                                  fontSize: 10,
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={statsTableCols.includes(col.key)}
+                                  onChange={() => setStatsTableCols(prev =>
+                                    prev.includes(col.key) ? prev.filter(k => k !== col.key) : [...prev, col.key]
+                                  )}
+                                  style={{ accentColor: t.teal || "#00e6b4", width: 11, height: 11 }}
+                                />
+                                {col.label}
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onMouseDown={e => e.stopPropagation()}
+                        onClick={() => setStatsTableVisible(false)}
+                        style={{ background: "none", border: "none", color: "rgba(160,190,230,0.5)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: "0 2px" }}
+                      >×</button>
+                    </div>
                   </div>
                   {/* Stats table */}
                   <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse", padding: "4px 0" }}>
                     <thead>
                       <tr style={{ color: "rgba(160,190,230,0.45)", textAlign: "left" }}>
-                        {["Molecule","EC50","Hill","R²","Model"].map(h => (
-                          <th key={h} style={{ padding: "4px 8px", fontWeight: 600 }}>{h}</th>
-                        ))}
+                        <th style={{ padding: "4px 8px", fontWeight: 600 }}>Molecule</th>
+                        {statsTableCols.map(key => {
+                          const col = RB_STAT_COLUMNS.find(c => c.key === key);
+                          return col ? <th key={key} style={{ padding: "4px 8px", fontWeight: 600 }}>{col.label}</th> : null;
+                        })}
                       </tr>
                     </thead>
                     <tbody>
                       {allFitResults.map((r, i) => ({ r, i })).filter(({ r }) => !selectedCompounds || selectedCompounds.has(r.name)).map(({ r, i }) => {
                         const s = getCompoundStyle(r.name, i);
-                        const p = r.fitResult?.params;
-                        const ec50 = p?.[2];
-                        const hill = p?.[1];
-                        const r2val = r.fitResult?.r2;
                         return (
                           <tr
                             key={r.name}
@@ -5124,10 +5213,15 @@ export default function BioassayCurveFitter() {
                               <span style={{ color: s.color }}>●</span>{" "}
                               <span style={{ color: "rgba(200,220,250,0.8)" }}>{r.name.length > 12 ? r.name.slice(0, 11) + "…" : r.name}</span>
                             </td>
-                            <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{ec50 > 0 ? ec50.toExponential(2) : "—"}</td>
-                            <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{hill != null ? hill.toFixed(2) : "—"}</td>
-                            <td style={{ padding: "3px 8px", color: "rgba(200,220,250,0.7)" }}>{r2val != null ? r2val.toFixed(3) : "—"}</td>
-                            <td style={{ padding: "3px 8px", color: "rgba(160,190,230,0.4)" }}>{r.modelType || "—"}</td>
+                            {statsTableCols.map(key => {
+                              const col = RB_STAT_COLUMNS.find(c => c.key === key);
+                              const isDim = key === "model" || key === "n";
+                              return col ? (
+                                <td key={key} style={{ padding: "3px 8px", color: isDim ? "rgba(160,190,230,0.4)" : "rgba(200,220,250,0.7)" }}>
+                                  {col.fmt(r)}
+                                </td>
+                              ) : null;
+                            })}
                           </tr>
                         );
                       })}
@@ -5728,6 +5822,8 @@ export default function BioassayCurveFitter() {
           axisYMax={axisYMax} setAxisYMax={setAxisYMax}
           statsTableVisible={statsTableVisible} setStatsTableVisible={setStatsTableVisible}
           statsTablePos={statsTablePos} setStatsTablePos={setStatsTablePos}
+          statsTableCols={statsTableCols} setStatsTableCols={setStatsTableCols}
+          statsColPickerOpen={statsColPickerOpen} setStatsColPickerOpen={setStatsColPickerOpen}
           theme={t}
         />
       )}
