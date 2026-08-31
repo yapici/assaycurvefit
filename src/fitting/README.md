@@ -28,11 +28,27 @@ The 4PL is
 y = D + (A - D) / (1 + (x / C)^B)
 ```
 
-with parameter vector `[A, B, C, D]`. **`A` is the response as `x → 0` and `D`
-the response as `x → ∞`** — `A` is not necessarily the smaller of the two. An
-inhibition curve has `A > D`. The 5PL uses `(EC50 / x)` instead of `(x / C)`,
-which flips the sign of the Hill slope relative to the 4PL; the two models
-therefore take differently-ordered parameter vectors.
+with parameter vector `[A, B, C, D]`. **`A` is the asymptote where `(x/C)^B → 0`
+and `D` the one where it → ∞.** Which end of the dose range each sits at depends
+on the *sign* of the Hill slope `B`:
+
+| | `x → 0` | `x → ∞` |
+| --- | --- | --- |
+| `B > 0` | `A` | `D` |
+| `B < 0` | `D` | `A` |
+
+So neither `A` nor `D` is reliably "the low plateau", and the UI's "min"/"max"
+labels are accurate for only one sign. Both signs occur on ordinary data — the
+app's own sample dataset fits to `B = -1.33` — because the two are mirror
+solutions and the optimiser may converge on either.
+
+The 5PL uses `(EC50 / x)` instead of `(x / C)`, which inverts the relationship
+again: there a *positive* Hill puts `Bottom` at `x → 0`. The two models
+therefore take differently-ordered parameter vectors with opposite slope-sign
+conventions.
+
+Both models return the true one-sided limit at `x ≤ 0` rather than a fixed
+asymptote, so a zero-dose vehicle-control row is handled correctly.
 
 The reduced models are the 4PL with parameters held fixed:
 

@@ -5,22 +5,56 @@ import {
 
 describe("model4PL", () => {
   // y = D + (A - D) / (1 + (x/C)^B), params [A, B, C, D].
-  // A is the response as x -> 0 and D the response as x -> infinity, so with
-  // A < D this is an ASCENDING curve. See the note in models.js.
-  const p = [0, 1, 1, 100]; // A 0, Hill 1, EC50 1, D 100 -> ascending
+  // A is the asymptote where (x/C)^B -> 0 and D where it -> infinity; which
+  // end of the dose range each sits at depends on the sign of B. See the
+  // note in models.js.
+  const p = [0, 1, 1, 100]; // B > 0, so: A at x -> 0, D at x -> inf (ascending)
 
   it("returns the midpoint response at x = EC50", () => {
     expect(model4PL(1, p)).toBe(50);
   });
 
-  it("approaches A as x -> 0+ and D as x -> inf", () => {
+  it("approaches A as x -> 0+ and D as x -> inf when the Hill slope is positive", () => {
     expect(model4PL(1e-12, p)).toBeCloseTo(0, 6);
     expect(model4PL(1e12, p)).toBeCloseTo(100, 6);
   });
 
-  it("clamps to A at x <= 0, consistent with the x -> 0+ limit", () => {
+  it("swaps which asymptote is which when the Hill slope is negative", () => {
+    // A and D are not "low" and "high" plateaus; they are the asymptotes at
+    // (x/C)^B -> 0 and -> inf respectively, and the sign of B decides which
+    // end of the dose range each one sits at. Both signs arise in practice:
+    // the app's own sample data fits to B = -1.33.
+    const neg = [0, -1, 1, 100];
+    expect(model4PL(1e-12, neg)).toBeCloseTo(100, 6);
+    expect(model4PL(1e12, neg)).toBeCloseTo(0, 6);
+  });
+
+  it("returns the correct x -> 0+ limit at x <= 0 for either Hill sign", () => {
+    // Regression guard: this used to return A unconditionally, which is the
+    // wrong asymptote whenever B < 0. A zero-dose vehicle-control row is
+    // legitimate input, so the wrong branch was reachable from the UI.
     expect(model4PL(0, p)).toBe(0);
     expect(model4PL(-5, p)).toBe(0);
+
+    const neg = [0, -1, 1, 100];
+    expect(model4PL(0, neg)).toBe(100);
+    expect(model4PL(-5, neg)).toBe(100);
+  });
+
+  it("agrees with its own one-sided limit at x <= 0", () => {
+    // Probe deep: a shallow slope approaches its asymptote slowly, so at
+    // B = 0.5 an x of 1e-14 is still 9e-6 away from the limit.
+    for (const B of [2, 1, 0.5, -0.5, -1, -2]) {
+      const q = [7, B, 1, 93];
+      expect(model4PL(0, q)).toBeCloseTo(model4PL(1e-30, q), 6);
+    }
+  });
+
+  it("is constant in x when the Hill slope is zero", () => {
+    const flat = [0, 0, 1, 100];
+    expect(model4PL(0, flat)).toBeCloseTo(50, 9);
+    expect(model4PL(1, flat)).toBeCloseTo(50, 9);
+    expect(model4PL(1e6, flat)).toBeCloseTo(50, 9);
   });
 
   it("is symmetric about the EC50 in log-x space", () => {
@@ -59,9 +93,22 @@ describe("model5PL", () => {
     expect(model5PL(1, p)).toBeCloseTo(50, 9);
   });
 
-  it("clamps to Bottom at x <= 0", () => {
+  it("returns the correct x -> 0+ limit at x <= 0 for either Hill sign", () => {
+    // The 5PL uses (EC50/x), so the sign relationship is inverted relative to
+    // the 4PL: a POSITIVE Hill puts Bottom at x -> 0.
     expect(model5PL(0, p)).toBe(0);
     expect(model5PL(-1, p)).toBe(0);
+
+    const neg = [0, -1, 1, 100, 1];
+    expect(model5PL(0, neg)).toBe(100);
+    expect(model5PL(-1, neg)).toBe(100);
+  });
+
+  it("agrees with its own one-sided limit at x <= 0", () => {
+    for (const Hill of [2, 1, 0.5, -0.5, -1, -2]) {
+      const q = [7, Hill, 1, 93, 1.4];
+      expect(model5PL(0, q)).toBeCloseTo(model5PL(1e-30, q), 6);
+    }
   });
 
   it("shifts the half-maximal point away from the EC50 parameter when S != 1", () => {

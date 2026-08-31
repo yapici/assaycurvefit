@@ -10,13 +10,19 @@
 // evaluator and callers must pass the matching vector.
 //
 // IMPORTANT — asymptote convention. In `y = D + (A - D) / (1 + (x/C)^B)`,
-// A is the response as x -> 0 and D the response as x -> infinity. So A is
-// NOT necessarily the smaller value:
-//   A < D  ->  ascending curve  (agonist / activation)
-//   A > D  ->  descending curve (inhibition; A is the uninhibited signal)
-// The UI labels these "Min"/"Max", which matches only for ascending curves.
-// The Hill slope B also carries a sign, and the 5PL uses (EC50/x) rather
-// than (x/C), which flips the sign of Hill between the two models.
+// A is the asymptote where (x/C)^B -> 0 and D the one where it -> infinity.
+// Which end of the dose range that corresponds to depends on the SIGN of the
+// Hill slope B, so neither A nor D is reliably "the low plateau":
+//
+//   B > 0:  y -> A as x -> 0,        y -> D as x -> infinity
+//   B < 0:  y -> D as x -> 0,        y -> A as x -> infinity
+//
+// The optimiser is free to converge on either sign (the two are mirror
+// solutions), so both cases occur in practice on ordinary data. The UI labels
+// these "min"/"max", which is accurate only for one sign.
+//
+// The 5PL uses (EC50/x) rather than (x/C), which inverts the relationship
+// again: there a POSITIVE Hill gives Bottom at x -> 0.
 
 // 4PL: y = D + (A - D) / (1 + (x/C)^B)
 // 5PL: y = Bottom + (Top - Bottom) / (1 + (EC50/x)^Hill)^S
@@ -26,13 +32,27 @@
 
 export function model4PL(x, params) {
   const [A, B, C, D] = params;
-  if (x <= 0) return A;
+  // x <= 0 is outside the model's domain (log-x is undefined, and a zero-dose
+  // control row is legitimate input). Return the true x -> 0+ limit, which
+  // depends on the SIGN of the Hill slope: (x/C)^B tends to 0 for B > 0, to
+  // infinity for B < 0, and to 1 for B = 0.
+  if (x <= 0) {
+    if (B > 0) return A;
+    if (B < 0) return D;
+    return D + (A - D) / 2; // B = 0: the model is constant in x
+  }
   return D + (A - D) / (1 + Math.pow(x / C, B));
 }
 
 export function model5PL(x, params) {
   const [Bottom, Hill, EC50, Top, S] = params;
-  if (x <= 0) return Bottom;
+  // Same reasoning as model4PL. Here the ratio is (EC50/x), which tends to
+  // infinity as x -> 0+, so the sign of Hill selects the opposite asymptote.
+  if (x <= 0) {
+    if (Hill > 0) return Bottom;
+    if (Hill < 0) return Top;
+    return Bottom + (Top - Bottom) / Math.pow(2, S); // Hill = 0: constant in x
+  }
   return Bottom + (Top - Bottom) / Math.pow(1 + Math.pow(EC50 / x, Hill), S);
 }
 
