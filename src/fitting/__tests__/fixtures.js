@@ -114,3 +114,28 @@ export function eval4PLExported(x, [A, B, C, D]) {
   if (x <= 0) return B > 0 ? A : D;
   return D + (A - D) / (1 + Math.pow(x / C, B));
 }
+
+/**
+ * Heteroscedastic 4PL data: noise SD proportional to the response.
+ *
+ * This is the variance structure that motivates relative weighting -- a
+ * constant coefficient of variation, so the absolute spread grows with signal.
+ * Fitting this unweighted lets the high end of the curve dominate.
+ *
+ * @param {number} cv Coefficient of variation, e.g. 0.15 for 15%.
+ */
+export function make4PLDataConstantCV({ params, nConc = 8, nReps = 3, decades = 4, cv = 0.15, seed = 1 }) {
+  const normal = seededNormal(seed);
+  const [, , C] = params;
+  const xData = [], yData = [];
+  for (let i = 0; i < nConc; i++) {
+    const logX = Math.log10(C) - decades / 2 + (decades * i) / (nConc - 1);
+    const x = Math.pow(10, logX);
+    const mu = eval4PLExported(x, params);
+    for (let r = 0; r < nReps; r++) {
+      xData.push(x);
+      yData.push(mu + cv * Math.abs(mu) * normal());
+    }
+  }
+  return { xData, yData };
+}

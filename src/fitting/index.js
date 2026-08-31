@@ -15,3 +15,6 @@ export { grubbsCriticalG, grubbsTest, runGrubbsAllGroups } from "./outliers.js";
 export {
   parameterCovariance, parameterIntervals, correlationMatrix, backTransformLog10,
 } from "./inference.js";
+export {
+  WEIGHTING_TYPES, buildWeights, weightedSSR, weightsConverged, estimateVariancePower,
+} from "./weights.js";

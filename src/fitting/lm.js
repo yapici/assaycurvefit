@@ -7,13 +7,24 @@ import { rSquared, computeAIC, computeAICc, computeBIC } from "./stats.js";
 import {
   parameterCovariance, parameterIntervals, correlationMatrix, backTransformLog10,
 } from "./inference.js";
+import { buildWeights, weightsConverged, estimateVariancePower } from "./weights.js";
 
 export function residuals(xData, yData, modelFn, params) {
   return xData.map((x, i) => yData[i] - modelFn(x, params));
 }
 
-export function sumSquaredResiduals(xData, yData, modelFn, params) {
-  return residuals(xData, yData, modelFn, params).reduce((s, r) => s + r * r, 0);
+/**
+ * Sum of squared residuals, optionally weighted.
+ *
+ * With weights this is the quantity a weighted fit minimises. It is NOT
+ * comparable across different weighting schemes -- the units change with the
+ * weights -- so never compare information criteria between a weighted and an
+ * unweighted fit.
+ */
+export function sumSquaredResiduals(xData, yData, modelFn, params, weights = null) {
+  const r = residuals(xData, yData, modelFn, params);
+  if (!weights) return r.reduce((s, v) => s + v * v, 0);
+  return r.reduce((s, v, i) => s + weights[i] * v * v, 0);
 }
 
 // Optimal relative step for a central difference is ~cbrt(machine epsilon).
@@ -88,21 +99,33 @@ export function withLogParams(modelFn, logIndices) {
  *   each step; returns the parameter vector to actually try. Use it to keep
  *   parameters in a valid region. Defaults to reverting non-finite entries.
  *   Callers that fit log10(EC50) do not need a positivity constraint on it.
+ * @param {number[]} [options.weights] Per-observation weights. Minimises
+ *   sum(w_i * r_i^2) instead of sum(r_i^2). The returned `ssr` is then the
+ *   WEIGHTED sum, since that is what was minimised.
  */
 export function levenbergMarquardt(xData, yData, modelFn, initialParams, options = {}) {
   const {
     maxIter = 500, tol = 1e-10, lambdaInit = 0.01, lambdaUp = 10, lambdaDown = 0.1,
-    lambdaMax = 1e12, constrain = null,
+    lambdaMax = 1e12, constrain = null, weights = null,
   } = options;
   let params = [...initialParams];
   let lambda = lambdaInit;
-  let ssr = sumSquaredResiduals(xData, yData, modelFn, params);
+  let ssr = sumSquaredResiduals(xData, yData, modelFn, params, weights);
   let converged = false;
   let improved = false;
 
+  // Weighted least squares is ordinary least squares on residuals and Jacobian
+  // rows scaled by sqrt(w): the normal equations (J^T W J) d = J^T W r become
+  // (J'^T J') d = J'^T r' with J' = sqrt(W) J and r' = sqrt(W) r.
+  const rootW = weights ? weights.map(Math.sqrt) : null;
+
   for (let iter = 0; iter < maxIter; iter++) {
-    const r = residuals(xData, yData, modelFn, params);
-    const J = jacobian(xData, modelFn, params);
+    let r = residuals(xData, yData, modelFn, params);
+    let J = jacobian(xData, modelFn, params);
+    if (rootW) {
+      r = r.map((v, i) => rootW[i] * v);
+      J = J.map((row, i) => row.map(v => rootW[i] * v));
+    }
     const Jt = matTranspose(J);
     const JtJ = matMul(Jt, J);
     const Jtr = Jt.map(row => row.reduce((s, v, i) => s + v * r[i], 0));
@@ -120,7 +143,7 @@ export function levenbergMarquardt(xData, yData, modelFn, initialParams, options
       ? constrain(proposed, params)
       : proposed.map((v, i) => (isFinite(v) ? v : params[i]));
 
-    const newSSR = sumSquaredResiduals(xData, yData, modelFn, newParams);
+    const newSSR = sumSquaredResiduals(xData, yData, modelFn, newParams, weights);
     if (newSSR < ssr) {
       improved = true;
       if (Math.abs(ssr - newSSR) / (ssr + 1e-15) < tol) { converged = true; params = newParams; ssr = newSSR; break; }
@@ -276,7 +299,8 @@ function buildInference({
  * The optimiser runs in log10(EC50) space; `params` in the returned object is
  * back-transformed to a linear EC50 so callers see the historical layout.
  */
-export function fitModel(xData, yData, modelFn, is5PL) {
+export function fitModel(xData, yData, modelFn, is5PL, options = {}) {
+  const { weighting = "none", maxWeightIterations = 10 } = options;
   const init = estimateInitialParams(xData, yData, is5PL);
   const perturbations = [
     init,
@@ -305,6 +329,42 @@ export function fitModel(xData, yData, modelFn, is5PL) {
   }
   if (!best) return null;
 
+  // ── Iteratively reweighted least squares ────────────────────────
+  // Relative weights depend on the fitted curve, and the fitted curve depends
+  // on the weights, so the two are solved together: fit, recompute weights
+  // from the new predictions, refit, until the weights stop moving. Seeding
+  // from the converged unweighted fit means this usually takes 2-3 passes.
+  //
+  // If weighting turns out not to be applicable -- most often because the
+  // response was normalised or background-subtracted to a zero baseline, where
+  // relative weights are undefined -- the unweighted fit is kept and the
+  // reason is reported rather than silently fitting something else.
+  let weights = null;
+  let weightWarning = null;
+  let weightIterations = 0;
+
+  if (weighting && weighting !== "none") {
+    let current = best;
+    for (let iter = 0; iter < maxWeightIterations; iter++) {
+      const predicted = xData.map(x => log.modelFn(x, current.params));
+      const built = buildWeights(weighting, { yPred: predicted, xData, yData });
+      // A warning can accompany usable weights (a near-zero baseline is
+      // computable but inadvisable), so record it either way; only a null
+      // weight vector means weighting could not be applied at all.
+      weightWarning = built.warning;
+      if (!built.weights) { weights = null; break; }
+      if (weightsConverged(weights, built.weights)) break;
+
+      weights = built.weights;
+      weightIterations = iter + 1;
+      const refit = levenbergMarquardt(
+        xData, yData, log.modelFn, current.params, { constrain, weights },
+      );
+      current = refit;
+    }
+    if (weights) best = current;
+  }
+
   // Resolve the mirror ambiguity before anything is derived from the params,
   // so the reported A/D and their intervals always mean the same thing. The
   // curve, and therefore the SSR and every goodness-of-fit statistic, is
@@ -316,7 +376,7 @@ export function fitModel(xData, yData, modelFn, is5PL) {
   const inference = buildInference({
     xData, yData, fitSpaceParams: best.params, fitModelFn: log.modelFn,
     ssr: best.ssr, logIndices: [EC50_INDEX], slotCount: is5PL ? 5 : 4,
-    freeIndices: null,
+    freeIndices: null, weights,
   });
 
   best = { ...best, params: log.toLinear(best.params) };
@@ -325,7 +385,17 @@ export function fitModel(xData, yData, modelFn, is5PL) {
   const k = is5PL ? 5 : 4;
   const yPred = xData.map(x => modelFn(x, best.params));
   const r2 = rSquared(yData, yPred);
-  const rmse = Math.sqrt(best.ssr / n);
+
+  // `best.ssr` is whatever was minimised -- weighted when weights are in play.
+  // The plain unweighted SSR is reported alongside it so the familiar
+  // goodness-of-fit numbers stay on a comparable scale across weighting
+  // choices; the information criteria necessarily use the minimised objective.
+  const wssr = weights ? best.ssr : null;
+  const ssrUnweighted = weights
+    ? yData.reduce((s, y, i) => s + (y - yPred[i]) ** 2, 0)
+    : best.ssr;
+
+  const rmse = Math.sqrt(ssrUnweighted / n);
   const aicc = computeAICc(n, k, best.ssr);
   const bic = computeBIC(n, k, best.ssr);
   const aic = computeAIC(n, k, best.ssr);
@@ -333,7 +403,23 @@ export function fitModel(xData, yData, modelFn, is5PL) {
   // Biological EC50 for 5PL (differs from parametric EC50 when S ≠ 1)
   const bioEC50 = is5PL ? computeBiologicalEC50(modelFn, best.params) : null;
 
-  return { ...best, r2, rmse, yPred, aicc, bic, aic, k, n, bioEC50, ...inference };
+  return {
+    ...best, r2, rmse, yPred, aicc, bic, aic, k, n, bioEC50, ...inference,
+    ssr: ssrUnweighted, wssr,
+    weighting: {
+      requested: weighting || "none",
+      applied: weights ? weighting : "none",
+      warning: weightWarning,
+      iterations: weightIterations,
+      weights,
+      // Measured from the replicates, independent of what was requested, so a
+      // caller can see whether the chosen scheme matches the data. The engine
+      // reports this rather than overriding the user: with a handful of doses
+      // the exponent is imprecise, and picking a weighting is an
+      // assay-development decision, not something to infer from one plate.
+      variance: estimateVariancePower(xData, yData),
+    },
+  };
 }
 
 // Fit constrained model, returns result with full 4PL params for display
