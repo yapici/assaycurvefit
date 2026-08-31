@@ -19,6 +19,8 @@ import { fitModel, model4PL } from "./fitting/index.js";
 | `stats.js` | `rSquared`, `computeAIC`/`AICc`/`BIC`, `groupByConcentration` |
 | `distributions.js` | `lnGamma`, `betaIncomplete`, `tCDF`, `tInv` |
 | `outliers.js` | `grubbsCriticalG`, `grubbsTest`, `runGrubbsAllGroups` |
+| `inference.js` | `parameterCovariance`, `parameterIntervals`, `correlationMatrix`, `backTransformLog10` |
+| `weights.js` | `buildWeights`, `weightedSSR`, `weightsConverged`, `estimateVariancePower` |
 
 ## Model conventions
 
@@ -123,6 +125,79 @@ fitted to the same data are interpretable.
 is not the fraction of variance explained, it is not bounded below by zero, and
 it stays high for visibly poor fits. Prefer RMSE and the residual plot.
 
+## Uncertainty
+
+`fitModel` and `fitConstrainedModel` return `dof`, `syx`, `se`, `ci`, `cov`,
+`correlation` and `logEC50` alongside the point estimates.
+
+- `se` and `ci` align with the caller-visible `params`. A parameter held fixed
+  by a constrained fit gets `null`, not a fabricated zero — it was not
+  estimated, so it carries no uncertainty from this fit.
+- The **EC50 interval is formed in log space and back-transformed**, so it is
+  asymmetric on the linear scale and can never have a negative lower bound.
+  `logEC50` carries the log-space estimate it derives from. Never rebuild it as
+  `EC50 ± t·SE`.
+- `syx` is `sqrt(SSR/dof)`, the residual standard error. This is not `rmse`,
+  which divides by `n` — both are reported, and `syx` is the one to quote.
+- `correlation` is where non-identifiability shows up. Individual SEs can look
+  finite while two parameters are hopelessly confounded; a near-unit
+  off-diagonal is the tell, and usually means the doses do not reach a plateau.
+- Everything is `null` when the fit has no residual degrees of freedom or the
+  normal equations are singular. Check before displaying.
+
+Intervals are Wald intervals from the linearisation at the solution: exact for
+a model linear in its parameters, and optimistic when a parameter is poorly
+determined. The coverage tests measure how well that holds up.
+
+## Weighting
+
+Off by default. Pass `{ weighting }` to `fitModel`, one of `WEIGHTING_TYPES`:
+`"none"`, `"1/Y"`, `"1/Y^2"`, `"1/SD^2"`.
+
+Relative weights come from the **predicted** values, not the observed ones —
+weighting on observed `y` rewards a point for having been noisy downward — so
+the fit and the weights are solved together by iteratively reweighted least
+squares, seeded from the converged unweighted fit.
+
+The result carries a `weighting` object: what was `requested`, what was
+`applied`, any `warning`, the IRLS `iterations`, the `weights` themselves, and
+a `variance` diagnostic. Weighting is never silently dropped; if `applied`
+differs from `requested` there is always a reason.
+
+**Weighting is a hypothesis about the variance, not a free improvement.** On
+constant-CV data `1/Y²` recovers the EC50 about 13% more accurately than
+unweighted; on homoscedastic data it does not help at all. `estimateVariancePower`
+measures which regime the data are in, by regressing log(SD) on log(mean)
+across concentration groups:
+
+| θ | variance | scheme |
+| --- | --- | --- |
+| ~0 | constant | `none` |
+| ~0.5 | ∝ mean | `1/Y` |
+| ~1 | ∝ mean² | `1/Y^2` |
+
+It is reported on every fit, weighted or not, so a mismatch between the chosen
+scheme and the data is visible. Treat it as a guide — with a handful of doses θ
+is imprecise, and picking a weighting is an assay-development decision.
+
+**Do not use relative weighting on normalised or background-subtracted data.**
+The weights are undefined at `Ŷ ≤ 0` (a hard refusal) and unsound near a zero
+baseline, where the constant-CV assumption says near-baseline points are almost
+noiseless. They are not, and the consequence is measurable: on curves whose
+true baseline is zero, `1/Y²` pulls the fitted EC50 to roughly 0.75× its true
+value while unweighted fits of the same data recover it. The engine warns when
+the fitted baseline is within three replicate SDs of zero — judged against the
+noise measured near the baseline, since on heteroscedastic data the spread at
+the top of the curve says nothing about the spread at the bottom.
+
+`1/SD^2` needs at least three replicates per concentration; below that the SD
+is itself so noisy that the weights add variance rather than removing it.
+
+Note that `ssr` stays **unweighted** so it remains comparable across weighting
+choices, while `wssr` is the weighted objective that was actually minimised.
+The information criteria use the minimised objective, so **never compare AIC or
+BIC between fits with different weighting**.
+
 ## Tests
 
 ```bash
@@ -130,12 +205,21 @@ npm test
 ```
 
 Tests live in `__tests__/`. `fixtures.js` builds deterministic synthetic
-datasets — there is no RNG, so golden values are stable across machines.
+datasets: a fixed sine pattern for "does it converge" checks, and a seeded
+mulberry32 + Box-Muller generator for anything needing genuine Gaussian noise.
+Both are reproducible, so results are stable across machines and runs.
 
 Distribution and outlier helpers are checked against published Student-t and
 Grubbs tables. `lm.test.js` checks the numerical Jacobian against the analytic
 4PL gradient, and `scale invariance` asserts that the same curve expressed in
 different concentration units produces the same fit.
+
+The inference code is validated two ways. Against **closed-form OLS**: for a
+model linear in its parameters the machinery must reproduce the textbook slope
+and intercept standard errors exactly, which pins the whole `σ²(JᵀJ)⁻¹` path
+including the `n−p` divisor. And by **simulated coverage**: over 300 seeded
+Gaussian datasets, nominal 95% intervals cover the true value 95.0% (A), 94.0%
+(Hill), 95.3% (EC50) and 94.7% (D) of the time.
 
 Tests marked `it.fails(...)` document a known defect: they assert the *correct*
 behaviour and are expected to fail until it is fixed. When you fix one, flip it
@@ -143,23 +227,14 @@ back to `it(...)` in the same commit.
 
 ## Not yet implemented
 
-The engine currently reports point estimates only. In rough priority order:
-
-- **Parameter standard errors and confidence intervals.** Nothing here computes
-  `σ²(JᵀJ)⁻¹`, so an EC50 comes back without an interval. `solveLU` and `tInv`
-  are already present, and the log-EC50 parameterisation means the interval can
-  be formed in log space and back-transformed to the correct asymmetric bounds.
-- **Weighting.** All fitting is unweighted least squares. Assay response is
-  typically heteroscedastic, and `1/Ŷ²` (relative) weighting is the usual
-  default for ligand-binding work. Weight on the *predicted* value, iteratively
-  reweighted, and disable it when the data have been normalised or background
-  subtraction has pushed the low plateau near zero — the weights are undefined
-  at `Ŷ = 0` and meaningless once the variance structure has been rescaled.
 - **Replicate-based lack-of-fit F-test.** `groupByConcentration` already yields
   the per-group spread needed to split residual SS into pure error and
   lack-of-fit, which answers "is this model adequate?" far better than R².
 - **Identifiability warnings** when the data do not bracket a plateau, so an
-  extrapolated Top/Bottom cannot be mistaken for a measured one.
+  extrapolated Top/Bottom cannot be mistaken for a measured one. The
+  `correlation` matrix already exposes the raw signal.
+- **Profile-likelihood or bootstrap intervals**, for the cases where the Wald
+  interval is too optimistic.
 - **Relative potency and parallelism** (USP <1032>/<1034>): common-slope fits
   across a test and reference curve, equivalence-based parallelism, and a
   potency ratio with a confidence interval.
