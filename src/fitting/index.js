@@ -6,7 +6,7 @@
 export { model4PL, model5PL, makeConstrainedModel, getModelFn, computeBiologicalEC50 } from "./models.js";
 export { matMul, matTranspose, solveLU } from "./linalg.js";
 export {
-  residuals, sumSquaredResiduals, jacobian, levenbergMarquardt,
+  residuals, sumSquaredResiduals, jacobian, withLogParams, levenbergMarquardt,
   estimateInitialParams, fitModel, fitConstrainedModel,
 } from "./lm.js";
 export { rSquared, computeAIC, computeAICc, computeBIC, groupByConcentration } from "./stats.js";

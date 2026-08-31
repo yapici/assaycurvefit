@@ -52,12 +52,13 @@ describe("jacobian", () => {
   });
 });
 
-describe("jacobian — known defect (fixed in Phase 1)", () => {
-  // The finite-difference step is an ABSOLUTE 1e-8 applied to every parameter.
-  // Concentrations are stored in linear molar units, so a nanomolar EC50 is a
-  // number like 1e-9 and the "small" perturbation is a 10x change. The
-  // resulting column is not a derivative; it can even carry the wrong sign.
-  it.fails("is accurate for the EC50 column at nanomolar scale", () => {
+describe("jacobian — step-size regression", () => {
+  // Regression guard. The step used to be an ABSOLUTE 1e-8 applied to every
+  // parameter. Concentrations are stored in linear molar units, so a
+  // nanomolar EC50 is a number like 1e-9 and the "small" perturbation was a
+  // 10x change: the column was not a derivative and could carry the wrong
+  // sign. The step is now relative to each parameter's own magnitude.
+  it("is accurate for the EC50 column at nanomolar scale", () => {
     const p = [0, 1.2, 1e-9, 100];
     const xs = [p[2] / 10, p[2], p[2] * 10];
     const J = jacobian(xs, model4PL, p);
@@ -67,8 +68,8 @@ describe("jacobian — known defect (fixed in Phase 1)", () => {
     });
   });
 
-  it("is accurate at micromolar scale and above (documents the boundary)", () => {
-    for (const C of [1e-6, 1, 1e3]) {
+  it("is accurate across nine decades of EC50", () => {
+    for (const C of [1e-12, 1e-9, 1e-6, 1, 1e3]) {
       const p = [0, 1.2, C, 100];
       const xs = [C / 10, C, C * 10];
       const J = jacobian(xs, model4PL, p);
@@ -139,6 +140,43 @@ describe("levenbergMarquardt", () => {
     const { xData, yData } = make4PLData({ params: [0, 1.2, 1, 100] });
     const r = levenbergMarquardt(xData, yData, model4PL, [5, 1, 0.5, 90]);
     expect(r.params[2]).toBeGreaterThan(0);
+  });
+
+  it("reports convergence for an exact fit that hits the precision floor", () => {
+    // The SSR criterion only fires on an *improving* step. A fit that reaches
+    // machine precision produces no further improvement, so convergence has to
+    // come from the lambda ceiling instead. Before that existed, a numerically
+    // perfect fit was reported as a failure.
+    const truth = [0, 1.2, 1, 100];
+    const { xData, yData } = make4PLData({ params: truth, nReps: 1 });
+    const r = levenbergMarquardt(xData, yData, model4PL, [5, 1, 0.5, 90]);
+    expect(r.ssr).toBeLessThan(1e-15);
+    expect(r.converged).toBe(true);
+  });
+
+  it("does NOT claim convergence when no downhill step is ever found", () => {
+    // Degenerate data: every y identical, started somewhere the optimiser
+    // cannot improve on. Reaching the lambda ceiling without a single accepted
+    // step is a genuine failure and must still report converged: false.
+    const xData = [1, 2, 3, 4];
+    const yData = [5, 5, 5, 5];
+    const r = levenbergMarquardt(xData, yData, model4PL, [5, 1, 1, 5]);
+    expect(r.converged).toBe(false);
+  });
+
+  it("honours a custom constrain callback on every proposed step", () => {
+    // constrain filters PROPOSED steps; the caller's initial vector is taken
+    // as given. Start below the ceiling so the optimiser genuinely tries to
+    // push the upper asymptote past it, and confirm it is held back.
+    const { xData, yData } = make4PLData({ params: [0, 1.2, 1, 100], noiseAmp: 1 });
+    const CEILING = 50;
+    const r = levenbergMarquardt(xData, yData, model4PL, [0, 1.2, 1, 20], {
+      constrain: (proposed) => proposed.map((v, i) => (i === 3 ? Math.min(v, CEILING) : v)),
+    });
+    expect(r.params[3]).toBeLessThanOrEqual(CEILING);
+    // Unconstrained, the same start climbs to the true plateau near 100.
+    const free = levenbergMarquardt(xData, yData, model4PL, [0, 1.2, 1, 20]);
+    expect(free.params[3]).toBeGreaterThan(90);
   });
 });
 
@@ -251,7 +289,7 @@ describe("scale invariance", () => {
     expect(b.converged).toBe(true);
   });
 
-  it.fails("fits nanomolar data identically to unit-scale data", () => {
+  it("fits nanomolar data identically to unit-scale data", () => {
     const a = fitAtScale(SCALES.unit);
     const b = fitAtScale(SCALES.nanomolar);
     expect(b.converged).toBe(true);
@@ -259,9 +297,35 @@ describe("scale invariance", () => {
     expect(b.params[1]).toBeCloseTo(a.params[1], 6);
   });
 
-  it.fails("recovers a nanomolar EC50 to the same accuracy as a unit-scale one", () => {
+  it("recovers a nanomolar EC50 to the same accuracy as a unit-scale one", () => {
     const fit = fitAtScale(SCALES.nanomolar);
     const err = Math.abs(Math.log10(fit.params[2]) - Math.log10(SCALES.nanomolar));
-    expect(err).toBeLessThan(0.05); // ~0.116 today, vs ~0.023 at unit scale
+    expect(err).toBeLessThan(0.05); // was ~0.116 with the absolute step
+  });
+
+  it("fits identically across nine decades of concentration units", () => {
+    const ref = fitAtScale(1);
+    for (const s of [1e-12, 1e-9, 1e-6, 1e-3, 1e3]) {
+      const fit = fitAtScale(s);
+      expect(fit.converged).toBe(true);
+      expect(fit.params[2] / s).toBeCloseTo(ref.params[2], 6);
+      expect(fit.params[1]).toBeCloseTo(ref.params[1], 6);
+      expect(fit.params[0]).toBeCloseTo(ref.params[0], 6);
+      expect(fit.params[3]).toBeCloseTo(ref.params[3], 6);
+      expect(fit.r2).toBeCloseTo(ref.r2, 9);
+    }
+  });
+
+  it("is invariant to the units of the RESPONSE axis too", () => {
+    // Scaling y scales the plateaus and leaves EC50 and Hill untouched.
+    const truth = [0, 1.2, 1, 100];
+    const base = make4PLData({ params: truth, noiseAmp: 2 });
+    const ref = fitModel(base.xData, base.yData, model4PL, false);
+    for (const m of [1e-3, 1e3, 47189.7]) {
+      const fit = fitModel(base.xData, base.yData.map(y => y * m), model4PL, false);
+      expect(fit.params[2]).toBeCloseTo(ref.params[2], 6);
+      expect(fit.params[1]).toBeCloseTo(ref.params[1], 5);
+      expect(fit.params[3] / m).toBeCloseTo(ref.params[3], 4);
+    }
   });
 });
