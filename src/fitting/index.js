@@ -4,7 +4,7 @@
 // internal reorganisation stays invisible to the UI layer.
 
 export { model4PL, model5PL, makeConstrainedModel, getModelFn, computeBiologicalEC50 } from "./models.js";
-export { matMul, matTranspose, solveLU } from "./linalg.js";
+export { matMul, matTranspose, solveLU, matInverse } from "./linalg.js";
 export {
   residuals, sumSquaredResiduals, jacobian, withLogParams, levenbergMarquardt,
   estimateInitialParams, fitModel, fitConstrainedModel,
@@ -12,3 +12,6 @@ export {
 export { rSquared, computeAIC, computeAICc, computeBIC, groupByConcentration } from "./stats.js";
 export { lnGamma, betaIncomplete, tCDF, tInv } from "./distributions.js";
 export { grubbsCriticalG, grubbsTest, runGrubbsAllGroups } from "./outliers.js";
+export {
+  parameterCovariance, parameterIntervals, correlationMatrix, backTransformLog10,
+} from "./inference.js";

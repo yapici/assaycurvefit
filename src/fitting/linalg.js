@@ -63,3 +63,23 @@ export function solveLU(A, b) {
   }
   return x;
 }
+
+/**
+ * Invert a square matrix by solving A x = e_i for each basis vector.
+ * Returns null if A is singular, matching solveLU's contract.
+ *
+ * Only used on the small (<= 5x5) J^T J from the normal equations, so the
+ * O(n^4) cost of repeated LU solves is irrelevant.
+ */
+export function matInverse(A) {
+  const n = A.length;
+  const columns = [];
+  for (let i = 0; i < n; i++) {
+    const e = new Array(n).fill(0);
+    e[i] = 1;
+    const col = solveLU(A, e);
+    if (!col) return null;
+    columns.push(col); // solveLU(A, e_i) is the i-th COLUMN of the inverse
+  }
+  return matTranspose(columns);
+}
