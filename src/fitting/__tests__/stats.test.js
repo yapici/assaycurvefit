@@ -24,18 +24,20 @@ describe("information criteria", () => {
   //   AIC  = n ln(SSR/n) + 2K
   //   BIC  = n ln(SSR/n) + K ln(n)
   //   AICc = AIC + 2K(K+1)/(n-K-1)
+  // K = k + 1 throughout: the residual variance is an estimated parameter too.
   const n = 20, k = 4, ssr = 10;
 
   it("computes AIC from the documented formula", () => {
-    expect(computeAIC(n, k, ssr)).toBeCloseTo(n * Math.log(ssr / n) + 2 * k, 10);
+    expect(computeAIC(n, k, ssr)).toBeCloseTo(n * Math.log(ssr / n) + 2 * (k + 1), 10);
   });
 
   it("computes BIC from the documented formula", () => {
-    expect(computeBIC(n, k, ssr)).toBeCloseTo(n * Math.log(ssr / n) + k * Math.log(n), 10);
+    expect(computeBIC(n, k, ssr)).toBeCloseTo(n * Math.log(ssr / n) + (k + 1) * Math.log(n), 10);
   });
 
   it("computes AICc as AIC plus the small-sample correction", () => {
-    const expected = computeAIC(n, k, ssr) + (2 * k * (k + 1)) / (n - k - 1);
+    const K = k + 1;
+    const expected = computeAIC(n, k, ssr) + (2 * K * (K + 1)) / (n - K - 1);
     expect(computeAICc(n, k, ssr)).toBeCloseTo(expected, 10);
   });
 
@@ -50,7 +52,10 @@ describe("information criteria", () => {
   });
 
   it("returns Infinity from AICc when the sample cannot support the parameters", () => {
+    // n - K - 1 <= 0 with K = 5, so n = 6 is already too few for a 4PL.
+    expect(computeAICc(6, 4, ssr)).toBe(Infinity);
     expect(computeAICc(5, 4, ssr)).toBe(Infinity);
+    expect(Number.isFinite(computeAICc(10, 4, ssr))).toBe(true);
   });
 
   it("AICc converges to AIC as n grows", () => {
@@ -59,24 +64,34 @@ describe("information criteria", () => {
   });
 });
 
-describe("information criteria — known defect (fixed in Phase 1)", () => {
-  // For nonlinear regression K must be the parameter count PLUS ONE, because
-  // the residual variance is also estimated (Motulsky, GraphPad Prism
-  // regression guide; Burnham & Anderson). The current implementation passes
-  // K = k, which is harmless for AIC/BIC (the offset cancels in a difference)
-  // but NOT for AICc, whose correction term is nonlinear in K.
-  //
-  // Consequence: the 5PL is under-penalised relative to the 4PL, so the "Auto"
-  // model selector's dAICc > 2 threshold tips toward the 5PL too readily.
-  it.fails("penalises the 4PL -> 5PL step correctly at small n", () => {
+describe("information criteria — variance-parameter regression", () => {
+  // Regression guard. For nonlinear regression K must be the parameter count
+  // PLUS ONE, because the residual variance is also estimated (Motulsky,
+  // GraphPad Prism regression guide; Burnham & Anderson 2002). Passing K = k
+  // is harmless for AIC/BIC -- the offset cancels in a difference -- but not
+  // for AICc, whose correction is nonlinear in K. The old code under-penalised
+  // the 5PL: at n = 16 the 4PL -> 5PL AICc step was 4.36 instead of 5.33, and
+  // at n = 12 it was 6.29 instead of 8.80. The "Auto" selector compares against
+  // a fixed dAICc > 2 threshold, so this tipped it toward the 5PL too readily,
+  // and most so on the small datasets where the correction matters most.
+  it("penalises the 4PL -> 5PL step correctly at small n", () => {
     const n = 16;
     const correct = (k) => {
       const K = k + 1;
       return n * Math.log(10 / n) + 2 * K + (2 * K * (K + 1)) / (n - K - 1);
     };
-    const expectedDelta = correct(5) - correct(4); // 3.33 with the variance param
-    const actualDelta = computeAICc(n, 5, 10) - computeAICc(n, 4, 10); // 2.36 today
+    const expectedDelta = correct(5) - correct(4);
+    const actualDelta = computeAICc(n, 5, 10) - computeAICc(n, 4, 10);
+    expect(expectedDelta).toBeCloseTo(5.333, 3);
     expect(actualDelta).toBeCloseTo(expectedDelta, 6);
+  });
+
+  it("penalises the extra parameter harder as n shrinks", () => {
+    const delta = (n) => computeAICc(n, 5, 10) - computeAICc(n, 4, 10);
+    expect(delta(12)).toBeCloseTo(8.8, 1);
+    expect(delta(16)).toBeCloseTo(5.333, 2);
+    expect(delta(48)).toBeCloseTo(2.62, 2);
+    expect(delta(12)).toBeGreaterThan(delta(48));
   });
 });
 

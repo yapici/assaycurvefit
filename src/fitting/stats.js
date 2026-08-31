@@ -10,21 +10,33 @@ export function rSquared(yData, yPred) {
 }
 
 // Information criteria for model comparison
+// For nonlinear regression K is the number of fitted parameters PLUS ONE,
+// because the residual variance is estimated too (Motulsky, GraphPad Prism
+// regression guide; Burnham & Anderson 2002). Getting this wrong is harmless
+// for AIC and BIC -- the offset cancels when two models are compared -- but
+// not for AICc, whose correction term is nonlinear in K and would otherwise
+// under-penalise the model with more parameters.
+function effectiveK(k) {
+  return k + 1;
+}
+
 export function computeAIC(n, k, ssr) {
-  // k = number of parameters, n = number of observations
-  // AIC = n * ln(SSR/n) + 2k
-  return n * Math.log(ssr / n) + 2 * k;
+  // k = number of fitted parameters, n = number of observations.
+  // AIC = n * ln(SSR/n) + 2K   (additive constant dropped; comparison only)
+  return n * Math.log(ssr / n) + 2 * effectiveK(k);
 }
 
 export function computeAICc(n, k, ssr) {
-  // Corrected AIC for small sample sizes
+  // Corrected AIC for small sample sizes: AIC + 2K(K+1)/(n-K-1).
+  const K = effectiveK(k);
   const aic = computeAIC(n, k, ssr);
-  if (n - k - 1 <= 0) return Infinity;
-  return aic + (2 * k * (k + 1)) / (n - k - 1);
+  if (n - K - 1 <= 0) return Infinity;
+  return aic + (2 * K * (K + 1)) / (n - K - 1);
 }
 
 export function computeBIC(n, k, ssr) {
-  return n * Math.log(ssr / n) + k * Math.log(n);
+  // BIC = n * ln(SSR/n) + K * ln(n)   (comparison only, as above)
+  return n * Math.log(ssr / n) + effectiveK(k) * Math.log(n);
 }
 
 // Group replicate data by concentration, compute stats
