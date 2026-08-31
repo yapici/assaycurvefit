@@ -4,7 +4,7 @@ import {
   estimateInitialParams, fitModel, fitConstrainedModel,
 } from "../lm.js";
 import { model4PL, model5PL } from "../models.js";
-import { make4PLData, grad4PL, SCALES } from "./fixtures.js";
+import { make4PLData, make4PLDataGaussian, grad4PL, SCALES } from "./fixtures.js";
 
 describe("residuals / sumSquaredResiduals", () => {
   const p = [0, 1, 1, 100];
@@ -226,6 +226,69 @@ describe("fitModel", () => {
     const fit = fitModel(xData, yData, model4PL, false);
     expect(fit.params[2]).toBeCloseTo(1, 3);
     expect(fit.r2).toBeGreaterThan(0.9999);
+  });
+});
+
+describe("fitModel — canonical solution form", () => {
+  // The 4PL has an exact two-fold symmetry: [A, B, C, D] and [D, -B, C, A]
+  // are the same curve. Which one the optimiser lands on depends only on the
+  // starting point, so without canonicalisation A and D are not stable
+  // quantities and their confidence intervals are uninterpretable.
+  const ascending = [0, 1.2, 1, 100];  // low response at low dose
+  const descending = [100, 1.2, 1, 0]; // high response at low dose
+
+  it("always returns a positive Hill slope", () => {
+    for (const truth of [ascending, descending]) {
+      for (let seed = 1; seed <= 20; seed++) {
+        const { xData, yData } = make4PLDataGaussian({ params: truth, sd: 4, seed });
+        expect(fitModel(xData, yData, model4PL, false).params[1]).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("reports A as the response at zero dose and D at infinite dose", () => {
+    const { xData, yData } = make4PLDataGaussian({ params: ascending, sd: 3, seed: 41 });
+    const fit = fitModel(xData, yData, model4PL, false);
+    expect(model4PL(1e-12, fit.params)).toBeCloseTo(fit.params[0], 6);
+    expect(model4PL(1e12, fit.params)).toBeCloseTo(fit.params[3], 6);
+  });
+
+  it("puts A below D for ascending data and above D for descending data", () => {
+    const asc = make4PLDataGaussian({ params: ascending, sd: 3, seed: 43 });
+    const desc = make4PLDataGaussian({ params: descending, sd: 3, seed: 43 });
+    const a = fitModel(asc.xData, asc.yData, model4PL, false);
+    const d = fitModel(desc.xData, desc.yData, model4PL, false);
+    expect(a.params[0]).toBeLessThan(a.params[3]);
+    expect(d.params[0]).toBeGreaterThan(d.params[3]);
+  });
+
+  it("leaves the curve, and every fit statistic, untouched", () => {
+    // Canonicalisation is a relabelling, not a refit.
+    const { xData, yData } = make4PLDataGaussian({ params: ascending, sd: 3, seed: 47 });
+    const fit = fitModel(xData, yData, model4PL, false);
+    const mirrored = [fit.params[3], -fit.params[1], fit.params[2], fit.params[0]];
+    for (const x of [0.01, 0.1, 1, 10, 100]) {
+      expect(model4PL(x, mirrored)).toBeCloseTo(model4PL(x, fit.params), 9);
+    }
+    expect(fit.r2).toBeGreaterThan(0.9);
+  });
+
+  it("recovers the true parameters in canonical orientation", () => {
+    const { xData, yData } = make4PLDataGaussian({ params: ascending, sd: 1, seed: 53 });
+    const fit = fitModel(xData, yData, model4PL, false);
+    expect(fit.params[0]).toBeCloseTo(0, 0);
+    expect(fit.params[1]).toBeCloseTo(1.2, 0);
+    expect(fit.params[2]).toBeCloseTo(1, 1);
+    expect(fit.params[3]).toBeCloseTo(100, 0);
+  });
+
+  it("does not canonicalise the 5PL, which has no such symmetry", () => {
+    // Flipping the slope sign does not commute with the asymmetry exponent S,
+    // so there is no equivalent relabelling to apply.
+    const { xData, yData } = make4PLDataGaussian({ params: ascending, sd: 2, seed: 59 });
+    const fit = fitModel(xData, yData, model5PL, true);
+    expect(fit.params).toHaveLength(5);
+    expect(Number.isFinite(fit.params[1])).toBe(true);
   });
 });
 

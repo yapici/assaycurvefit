@@ -4,6 +4,9 @@
 import { model4PL, makeConstrainedModel, computeBiologicalEC50 } from "./models.js";
 import { matMul, matTranspose, solveLU } from "./linalg.js";
 import { rSquared, computeAIC, computeAICc, computeBIC } from "./stats.js";
+import {
+  parameterCovariance, parameterIntervals, correlationMatrix, backTransformLog10,
+} from "./inference.js";
 
 export function residuals(xData, yData, modelFn, params) {
   return xData.map((x, i) => yData[i] - modelFn(x, params));
@@ -171,6 +174,103 @@ export function estimateInitialParams(xData, yData, is5PL = false) {
 const EC50_INDEX = 2;
 
 /**
+ * Put a 4PL solution into canonical form: Hill slope positive.
+ *
+ * The 4PL has an exact two-fold symmetry. Because
+ *
+ *   D + (A - D)/(1 + (x/C)^B)  ==  A + (D - A)/(1 + (x/C)^-B)
+ *
+ * the vectors [A, B, C, D] and [D, -B, C, A] describe the SAME curve, with
+ * identical SSR and identical EC50. Which one the optimiser lands on depends
+ * on nothing more than the starting point, so an unconstrained fit returns
+ * either at random -- in practice the flipped one most of the time.
+ *
+ * That makes A and D meaningless as reported quantities: sometimes A is the
+ * zero-dose asymptote and sometimes it is the infinite-dose one. It also
+ * inverts the UI's "min"/"max" labels, and makes a confidence interval on A
+ * uninterpretable, since it may describe either end of the curve.
+ *
+ * Fixing B > 0 resolves it: A is then always the response as x -> 0 and D
+ * always the response as x -> infinity, which is what the labels claim.
+ *
+ * Applies to the unconstrained 4PL only. A constrained fit cannot be flipped
+ * (the swap would move a value into a slot the caller pinned), and the 5PL has
+ * no equivalent symmetry because the asymmetry exponent S does not commute
+ * with the slope inversion.
+ */
+function canonicalise4PL(params) {
+  const [A, B, C, D] = params;
+  return B < 0 ? [D, -B, C, A] : [A, B, C, D];
+}
+
+/**
+ * Standard errors and confidence intervals for a converged fit.
+ *
+ * Everything happens in FITTING space -- the space the optimiser actually
+ * searched, with log10(EC50) in place of EC50 -- and is then mapped back onto
+ * the caller-visible parameter layout. Two things make that mapping non-trivial:
+ *
+ *  - a constrained fit (1PL/2PL/3PL) searches only the FREE parameters, so the
+ *    covariance matrix is smaller than the 4-slot vector the caller sees. Fixed
+ *    slots get a null SE, which is correct: they were not estimated, so they
+ *    carry no uncertainty from this fit.
+ *  - the EC50 interval must be back-transformed from log space rather than
+ *    formed on the linear scale, which is what makes it asymmetric.
+ *
+ * @param {number[]|null} freeIndices Caller-visible index of each free
+ *   parameter, or null when every slot is free.
+ * @returns Fields to merge into the fit result. `se`/`ci` are aligned with the
+ *   caller-visible `params`; `logEC50` carries the log-space estimate that the
+ *   EC50 interval derives from.
+ */
+function buildInference({
+  xData, yData, fitSpaceParams, fitModelFn, ssr,
+  logIndices, slotCount, freeIndices, weights = null, alpha = 0.05,
+}) {
+  const empty = {
+    dof: null, syx: null, se: null, ci: null, logEC50: null,
+    cov: null, correlation: null,
+  };
+
+  const J = jacobian(xData, fitModelFn, fitSpaceParams);
+  const covResult = parameterCovariance(J, ssr, weights);
+  if (!covResult) return empty;
+
+  const { cov, dof, syx } = covResult;
+  const { se, ci, tCrit } = parameterIntervals(fitSpaceParams, cov, dof, alpha);
+
+  // Expand from the free-parameter vector onto the caller-visible slots.
+  const slots = (fill) => {
+    const out = new Array(slotCount).fill(null);
+    fitSpaceParams.forEach((_, freeIdx) => {
+      const slot = freeIndices ? freeIndices[freeIdx] : freeIdx;
+      out[slot] = fill(freeIdx);
+    });
+    return out;
+  };
+
+  const seOut = slots(i => se[i]);
+  const ciOut = slots(i => ci[i]);
+
+  // Map the log10 slots back to the linear scale the caller reports.
+  let logEC50 = null;
+  for (const logIdx of logIndices) {
+    const slot = freeIndices ? freeIndices[logIdx] : logIdx;
+    const back = backTransformLog10(fitSpaceParams[logIdx], se[logIdx], tCrit);
+    seOut[slot] = back.se;
+    ciOut[slot] = back.ci;
+    if (slot === EC50_INDEX) {
+      logEC50 = { value: fitSpaceParams[logIdx], se: se[logIdx], ci: ci[logIdx] };
+    }
+  }
+
+  return {
+    dof, syx, se: seOut, ci: ciOut, logEC50,
+    cov, correlation: correlationMatrix(cov),
+  };
+}
+
+/**
  * Fit a single model with multi-start, return full stats.
  *
  * The optimiser runs in log10(EC50) space; `params` in the returned object is
@@ -204,6 +304,21 @@ export function fitModel(xData, yData, modelFn, is5PL) {
     if (!best || result.ssr < best.ssr) best = result;
   }
   if (!best) return null;
+
+  // Resolve the mirror ambiguity before anything is derived from the params,
+  // so the reported A/D and their intervals always mean the same thing. The
+  // curve, and therefore the SSR and every goodness-of-fit statistic, is
+  // unchanged; only the labelling of the two asymptotes is.
+  if (!is5PL) best = { ...best, params: canonicalise4PL(best.params) };
+
+  // Inference is computed in FITTING space (log10 EC50), where the Wald
+  // interval is well behaved, then back-transformed. See buildInference.
+  const inference = buildInference({
+    xData, yData, fitSpaceParams: best.params, fitModelFn: log.modelFn,
+    ssr: best.ssr, logIndices: [EC50_INDEX], slotCount: is5PL ? 5 : 4,
+    freeIndices: null,
+  });
+
   best = { ...best, params: log.toLinear(best.params) };
 
   const n = xData.length;
@@ -218,7 +333,7 @@ export function fitModel(xData, yData, modelFn, is5PL) {
   // Biological EC50 for 5PL (differs from parametric EC50 when S ≠ 1)
   const bioEC50 = is5PL ? computeBiologicalEC50(modelFn, best.params) : null;
 
-  return { ...best, r2, rmse, yPred, aicc, bic, aic, k, n, bioEC50 };
+  return { ...best, r2, rmse, yPred, aicc, bic, aic, k, n, bioEC50, ...inference };
 }
 
 // Fit constrained model, returns result with full 4PL params for display
@@ -262,6 +377,16 @@ export function fitConstrainedModel(xData, yData, fixedMap) {
     if (!best || result.ssr < best.ssr) best = result;
   }
   if (!best) return null;
+
+  // As in fitModel, inference is computed in fitting space. `freeIndices` maps
+  // the free-parameter vector back onto the 4 caller-visible slots; the fixed
+  // slots come back with a null SE, since this fit did not estimate them.
+  const inference = buildInference({
+    xData, yData, fitSpaceParams: best.params, fitModelFn: log.modelFn,
+    ssr: best.ssr, logIndices: ec50FreeIdx >= 0 ? [ec50FreeIdx] : [],
+    slotCount: 4, freeIndices,
+  });
+
   best = { ...best, params: log.toLinear(best.params) };
 
   // Expand to full 4PL params for display
@@ -280,5 +405,8 @@ export function fitConstrainedModel(xData, yData, fixedMap) {
   const bic = computeBIC(n, k, best.ssr);
   const aic = computeAIC(n, k, best.ssr);
 
-  return { params: fullParams, ssr: best.ssr, converged: best.converged, r2, rmse, yPred, aicc, bic, aic, k, n, bioEC50: null };
+  return {
+    params: fullParams, ssr: best.ssr, converged: best.converged,
+    r2, rmse, yPred, aicc, bic, aic, k, n, bioEC50: null, ...inference,
+  };
 }
