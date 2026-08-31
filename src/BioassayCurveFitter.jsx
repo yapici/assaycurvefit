@@ -3,6 +3,7 @@ import {
   model4PL, model5PL, getModelFn, computeBiologicalEC50,
   fitModel, fitConstrainedModel,
   groupByConcentration, grubbsTest, runGrubbsAllGroups,
+  WEIGHTING_TYPES,
 } from "./fitting/index.js";
 
 // ── Multi-Compound CSV Parser ─────────────────────────────────────
@@ -2440,6 +2441,17 @@ export default function BioassayCurveFitter() {
   const [parsedData, setParsedData] = useState(null);
   const [showResiduals, setShowResiduals] = useState(false);
   const [weightsType, setWeightsType] = useState("none");
+
+  // Options threaded into every fitModel call. Relative weighting is suppressed
+  // on normalised data: min-max scaling puts the lower asymptote at exactly 0,
+  // where 1/Y and 1/Y^2 are undefined, and rescaling has destroyed the variance
+  // structure those schemes assume in the first place.
+  const fitOpts = useMemo(() => ({
+    weighting: normalize && weightsType !== "none" && weightsType !== "1/SD^2"
+      ? "none"
+      : weightsType,
+  }), [weightsType, normalize]);
+
   const [comparison, setComparison] = useState(null); // { fit4PL, fit5PL, selected, reason }
   const [activeModel, setActiveModel] = useState("4PL"); // which model is currently displayed
   const [pointView, setPointView] = useState("individual"); // "individual" or "errorbars"
@@ -2714,8 +2726,8 @@ export default function BioassayCurveFitter() {
 
       if (modelType === "Auto") {
         // Fit 4PL and 5PL, compare
-        const fit4 = fitModel(xData, yData, model4PL, false);
-        const fit5 = xData.length >= 5 ? fitModel(xData, yData, model5PL, true) : null;
+        const fit4 = fitModel(xData, yData, model4PL, false, fitOpts);
+        const fit5 = xData.length >= 5 ? fitModel(xData, yData, model5PL, true, fitOpts) : null;
 
         if (!fit4 && !fit5) { setError("Fitting failed for both models. Check your data."); return; }
         if (!fit5) {
@@ -2732,7 +2744,18 @@ export default function BioassayCurveFitter() {
         const eNearOne = Math.abs(eParam - 1) < 0.05;
 
         let selected, reason;
-        if (eNearOne) {
+        // A model whose parameters are not separately identifiable must not be
+        // recommended, however well it scores. Information criteria reward the
+        // 5PL for fitting the residuals more closely even when the asymmetry
+        // parameter has run away to a meaningless value -- weighting makes this
+        // markedly more likely -- and a null covariance is exactly that signal.
+        const fit5Degenerate = fit5.cov == null;
+        if (fit5Degenerate) {
+          selected = "4PL";
+          reason = `4PL preferred: 5PL parameters are not separately identifiable ` +
+            `from this data (S=${eParam.toPrecision(4)}), so its ΔAICc=${deltaAICc.toFixed(1)} ` +
+            `advantage is not meaningful`;
+        } else if (eNearOne) {
           selected = "4PL";
           reason = `5PL asymmetry parameter S≈${eParam.toFixed(3)} (near 1.0); extra parameter not justified`;
         } else if (deltaAICc > 2 && deltaBIC > 0) {
@@ -2778,7 +2801,7 @@ export default function BioassayCurveFitter() {
         // Manual 4PL or 5PL
         if (modelType === "5PL" && xData.length < 5) { setError("Need at least 5 data points for 5PL"); return; }
         const modelFn = getModelFn(modelType);
-        const result = fitModel(xData, yData, modelFn, modelType === "5PL");
+        const result = fitModel(xData, yData, modelFn, modelType === "5PL", fitOpts);
         if (!result) { setError("Fitting failed to converge. Check your data."); return; }
         setActiveModel(modelType);
         setFitResult(result);
@@ -2787,7 +2810,7 @@ export default function BioassayCurveFitter() {
     } catch (e) {
       setError("Error: " + e.message);
     }
-  }, [rawData, modelType, parseData, bgEnabled, bgRawData, parseBgValues, normalize, fixedMin, fixedMax, fixedHill]);
+  }, [rawData, modelType, parseData, bgEnabled, bgRawData, parseBgValues, normalize, fixedMin, fixedMax, fixedHill, fitOpts]);
 
   // Merged set of outlier + excluded indices for chart display
   const chartOutlierIndices = useMemo(() => {
@@ -3178,6 +3201,26 @@ export default function BioassayCurveFitter() {
     ? ["Bottom", "Hill", "EC50", "Top", "S (asymmetry)"]
     : ["A (min)", "B (slope)", "C (EC50)", "D (max)"];
 
+  // What the replicates say about the variance structure, so the user can see
+  // whether the weighting they picked matches their data. Reported for every
+  // fit, weighted or not; deliberately a hint, not an override, since with a
+  // handful of doses the exponent is imprecise.
+  const varianceHint = useMemo(() => {
+    const v = fitResult?.weighting?.variance;
+    if (!v) return null;
+    if (v.theta == null) return null;
+    const label = { none: "no weighting", "1/Y": "1/Y", "1/Y^2": "1/Y^2" }[v.recommended];
+    const agrees = v.recommended === (fitResult.weighting.applied || "none");
+    return `Replicates give a variance exponent of ${v.theta.toFixed(2)} ± ${v.se.toFixed(2)} ` +
+      `across ${v.groups} concentrations, which suggests ${label}` +
+      (agrees ? " — matching the current choice." : ".");
+  }, [fitResult]);
+
+  // Compact fixed/exponential formatting, shared by the value and its interval
+  // so an estimate and its bounds never render in different notations.
+  const fmtParam = (v) => (v == null || !isFinite(v)) ? "--"
+    : (Math.abs(v) < 0.01 || Math.abs(v) > 10000) ? v.toExponential(3) : v.toFixed(4);
+
   // Which params are fixed for constrained models (indices into 4PL param vector)
   const fixedParams = activeModel === "1PL" ? new Set([0, 1, 3])
     : activeModel === "2PL" ? new Set([0, 3])
@@ -3243,8 +3286,8 @@ export default function BioassayCurveFitter() {
     setError(null);
 
     if (modelType === "Auto") {
-      const fit4 = fitModel(xFiltered, yFiltered, model4PL, false);
-      const fit5 = xFiltered.length >= 5 ? fitModel(xFiltered, yFiltered, model5PL, true) : null;
+      const fit4 = fitModel(xFiltered, yFiltered, model4PL, false, fitOpts);
+      const fit5 = xFiltered.length >= 5 ? fitModel(xFiltered, yFiltered, model5PL, true, fitOpts) : null;
       if (!fit4 && !fit5) { setError("Fitting failed"); return; }
       if (!fit5) { setActiveModel("4PL"); setFitResult(fit4); return; }
       const deltaAICc = fit4.aicc - fit5.aicc;
@@ -3270,7 +3313,7 @@ export default function BioassayCurveFitter() {
       setFitResult(result);
     } else {
       const modelFn = getModelFn(modelType);
-      const result = fitModel(xFiltered, yFiltered, modelFn, modelType === "5PL");
+      const result = fitModel(xFiltered, yFiltered, modelFn, modelType === "5PL", fitOpts);
       if (!result) { setError("Fitting failed"); return; }
       setActiveModel(modelType);
       setFitResult(result);
@@ -3823,8 +3866,8 @@ export default function BioassayCurveFitter() {
     try {
       const { xData, yData } = parseData(csv);
       if (xData.length < 4) return;
-      const fit4 = fitModel(xData, yData, model4PL, false);
-      const fit5 = xData.length >= 5 ? fitModel(xData, yData, model5PL, true) : null;
+      const fit4 = fitModel(xData, yData, model4PL, false, fitOpts);
+      const fit5 = xData.length >= 5 ? fitModel(xData, yData, model5PL, true, fitOpts) : null;
       setParsedData({ xData, yData, yRaw: yData, bgSubtracted: 0, normMin: 0, normMax: 1, normalized: false });
       if (!fit4 && !fit5) return;
       if (!fit5 || Math.abs(fit5.params[4] - 1) < 0.05) {
@@ -3855,8 +3898,8 @@ export default function BioassayCurveFitter() {
         const csv = compoundToCSV(compound);
         const { xData, yData } = parseData(csv);
         if (xData.length < 4) return { name: compound.name, xData: [], yData: [], fitResult: null, modelType: null };
-        const fit4 = fitModel(xData, yData, model4PL, false);
-        const fit5 = xData.length >= 5 ? fitModel(xData, yData, model5PL, true) : null;
+        const fit4 = fitModel(xData, yData, model4PL, false, fitOpts);
+        const fit5 = xData.length >= 5 ? fitModel(xData, yData, model5PL, true, fitOpts) : null;
         let fitResult, modelType;
         if (!fit5 || Math.abs(fit5.params[4] - 1) < 0.05) {
           modelType = "4PL"; fitResult = fit4;
@@ -4403,6 +4446,51 @@ export default function BioassayCurveFitter() {
                 Responses scaled to 0-100% using raw min/max before fitting
               </p>
             )}
+
+            {/* Weighting. Assay response is usually heteroscedastic, so an
+                unweighted fit lets the top of the curve dominate. Which scheme
+                is right depends on the assay's variance structure, which the
+                engine measures from the replicates and reports below. */}
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${t.panelBorder}` }}>
+              <div style={{ fontSize: 10, color: t.labelDim, marginBottom: 6 }}>Weighting</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                {WEIGHTING_TYPES.map(w => (
+                  <button
+                    key={w}
+                    onClick={() => setWeightsType(w)}
+                    disabled={normalize && w !== "none" && w !== "1/SD^2"}
+                    title={normalize && w !== "none" && w !== "1/SD^2"
+                      ? "Relative weighting is not valid on normalised data"
+                      : undefined}
+                    style={{
+                      flex: 1, padding: "4px 0", fontSize: 9,
+                      fontFamily: "'JetBrains Mono', monospace",
+                      borderRadius: 4,
+                      border: `1px solid ${weightsType === w ? t.tealBorder : "rgba(60,100,160,0.15)"}`,
+                      background: weightsType === w ? t.tealBg : t.btnInactive,
+                      color: normalize && w !== "none" && w !== "1/SD^2" ? t.textFaint
+                        : weightsType === w ? t.teal : t.textDim,
+                      cursor: normalize && w !== "none" && w !== "1/SD^2" ? "not-allowed" : "pointer",
+                    }}
+                  >{w === "none" ? "None" : w}</button>
+                ))}
+              </div>
+              {varianceHint && (
+                <p style={{ fontSize: 8, color: t.textDim, marginTop: 5, lineHeight: 1.5 }}>
+                  {varianceHint}
+                </p>
+              )}
+              {fitResult?.weighting?.warning && (
+                <p style={{
+                  fontSize: 8, color: t.orange, marginTop: 5, lineHeight: 1.5,
+                  padding: "5px 6px", borderRadius: 4,
+                  background: "rgba(255,180,50,0.08)",
+                  border: "1px solid rgba(255,180,50,0.2)",
+                }}>
+                  {fitResult.weighting.warning}
+                </p>
+              )}
+            </div>
           </div>
 
           {/* Model Comparison Panel (Auto mode) */}
@@ -4420,6 +4508,17 @@ export default function BioassayCurveFitter() {
                   return <span style={{ fontSize: 9, color: c, fontWeight: 700, textTransform: "none", letterSpacing: 0, padding: "2px 6px", border: `1px solid ${c}55`, borderRadius: 4, background: `${c}18` }}>{allFitResults[overlayEditIndex].name}</span>;
                 })()}
               </div>
+              {/* Information criteria are computed from the minimised objective,
+                  which the weights rescale. 4PL vs 5PL here is a fair comparison
+                  (same weighting), but the absolute values are not comparable to
+                  a run with different weighting. */}
+              {fitResult?.weighting?.applied && fitResult.weighting.applied !== "none" && (
+                <p style={{ fontSize: 8, color: t.textDim, marginBottom: 8, lineHeight: 1.5 }}>
+                  Fitted with {fitResult.weighting.applied} weighting. AICc/BIC/SSR are on
+                  the weighted scale — compare 4PL against 5PL here, but not against a fit
+                  using different weighting.
+                </p>
+              )}
               
               {/* Comparison table */}
               <div style={{ fontSize: 10 }}>
@@ -4604,33 +4703,53 @@ export default function BioassayCurveFitter() {
               </div>
               {paramLabels.map((label, i) => (
                 <div key={i} style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
                   padding: "6px 0",
                   borderBottom: i < paramLabels.length - 1 ? "1px solid rgba(60,100,160,0.08)" : "none",
                 }}>
-                  <span style={{ fontSize: 11, color: t.labelDim, display: "flex", alignItems: "center", gap: 4 }}>
-                    {label}
-                    {fixedParams.has(i) && (
-                      <span style={{
-                        fontSize: 7, padding: "1px 4px", borderRadius: 3,
-                        background: "rgba(255,180,50,0.12)", border: "1px solid rgba(255,180,50,0.25)",
-                        color: t.orange, fontWeight: 600, textTransform: "uppercase",
-                      }}>fixed</span>
-                    )}
-                  </span>
-                  <span style={{
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: i === 2 ? t.orange : t.teal,
-                  }}>
-                    {Math.abs(fitResult.params[i]) < 0.01 || Math.abs(fitResult.params[i]) > 10000
-                      ? fitResult.params[i].toExponential(4)
-                      : fitResult.params[i].toFixed(4)}
-                  </span>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 11, color: t.labelDim, display: "flex", alignItems: "center", gap: 4 }}>
+                      {label}
+                      {fixedParams.has(i) && (
+                        <span style={{
+                          fontSize: 7, padding: "1px 4px", borderRadius: 3,
+                          background: "rgba(255,180,50,0.12)", border: "1px solid rgba(255,180,50,0.25)",
+                          color: t.orange, fontWeight: 600, textTransform: "uppercase",
+                        }}>fixed</span>
+                      )}
+                    </span>
+                    <span style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: i === 2 ? t.orange : t.teal,
+                    }}>
+                      {fmtParam(fitResult.params[i])}
+                    </span>
+                  </div>
+                  {/* Standard error and 95% CI. The EC50 interval is computed in
+                      log space and back-transformed, so it is asymmetric. */}
+                  {fitResult.ci?.[i] && (
+                    <div style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                      marginTop: 2, fontSize: 9, color: t.textDim,
+                      fontFamily: "'JetBrains Mono', monospace",
+                    }}>
+                      <span>{fitResult.se?.[i] != null ? `± ${fmtParam(fitResult.se[i])}` : ""}</span>
+                      <span title="95% confidence interval">
+                        95% CI {fmtParam(fitResult.ci[i].lo)} – {fmtParam(fitResult.ci[i].hi)}
+                      </span>
+                    </div>
+                  )}
                 </div>
               ))}
+
+              {/* Why no intervals, when there are none to show. */}
+              {fitResult.ci == null && (
+                <p style={{ fontSize: 8, color: t.textDim, marginTop: 6, lineHeight: 1.5 }}>
+                  No confidence intervals: {fitResult.n <= fitResult.k
+                    ? `${fitResult.n} points cannot support ${fitResult.k} parameters.`
+                    : "the parameters are not separately identifiable from this data."}
+                </p>
+              )}
 
               {/* Biological EC50 for 5PL */}
               {activeModel === "5PL" && fitResult.bioEC50 && (
