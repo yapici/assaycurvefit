@@ -10,7 +10,7 @@ export {
   estimateInitialParams, fitModel, fitConstrainedModel,
 } from "./lm.js";
 export { rSquared, computeAIC, computeAICc, computeBIC, groupByConcentration } from "./stats.js";
-export { lnGamma, betaIncomplete, tCDF, tInv } from "./distributions.js";
+export { lnGamma, betaIncomplete, tCDF, tInv, fCDF, fPValue, fInv } from "./distributions.js";
 export { grubbsCriticalG, grubbsTest, runGrubbsAllGroups } from "./outliers.js";
 export {
   parameterCovariance, parameterIntervals, correlationMatrix, backTransformLog10,
@@ -18,3 +18,4 @@ export {
 export {
   WEIGHTING_TYPES, buildWeights, weightedSSR, weightsConverged, estimateVariancePower,
 } from "./weights.js";
+export { lackOfFitTest, describeLackOfFit } from "./lackoffit.js";

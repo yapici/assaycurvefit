@@ -83,3 +83,50 @@ export function tInv(p, df) {
   }
   return (lo + hi) / 2;
 }
+
+// ── F distribution ────────────────────────────────────────────────
+// Backs the lack-of-fit and model-comparison F-tests. Expressed through the
+// same regularized incomplete beta as the t-distribution above:
+//
+//   P(F <= f) = I_{d1 f / (d1 f + d2)}(d1/2, d2/2)
+
+// CDF of the F-distribution: P(F <= f) for (df1, df2) degrees of freedom.
+export function fCDF(f, df1, df2) {
+  if (!isFinite(f) || f <= 0) return 0;
+  if (df1 <= 0 || df2 <= 0) return NaN;
+  const x = (df1 * f) / (df1 * f + df2);
+  return betaIncomplete(x, df1 / 2, df2 / 2);
+}
+
+// Upper-tail p-value: P(F > f). This is the quantity an F-test reports, and
+// computing it directly (rather than as 1 - fCDF) keeps the precision where it
+// matters -- a decisive test has a p-value near zero, which is exactly where
+// the subtraction would lose its significant digits.
+export function fPValue(f, df1, df2) {
+  if (!isFinite(f) || f <= 0) return 1;
+  if (df1 <= 0 || df2 <= 0) return NaN;
+  // I_x(a,b) = 1 - I_{1-x}(b,a), applied so the result is a direct evaluation.
+  const x = df2 / (df1 * f + df2);
+  return betaIncomplete(x, df2 / 2, df1 / 2);
+}
+
+// Inverse F: returns f such that P(F > f) = p (upper tail), by bisection.
+export function fInv(p, df1, df2) {
+  if (df1 <= 0 || df2 <= 0) return NaN;
+  if (p <= 0) return Infinity;
+  if (p >= 1) return 0;
+
+  let lo = 0, hi = 2;
+  // Expand until the upper tail beyond `hi` is smaller than the target.
+  while (fPValue(hi, df1, df2) > p) {
+    hi *= 2;
+    if (hi > 1e12) return hi;
+  }
+  for (let i = 0; i < 200; i++) {
+    const mid = (lo + hi) / 2;
+    if (fPValue(mid, df1, df2) > p) lo = mid;
+    else hi = mid;
+    if (hi - lo < 1e-12 * Math.max(1, hi)) break;
+  }
+  return (lo + hi) / 2;
+}

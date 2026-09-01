@@ -8,6 +8,7 @@ import {
   parameterCovariance, parameterIntervals, correlationMatrix, backTransformLog10,
 } from "./inference.js";
 import { buildWeights, weightsConverged, estimateVariancePower } from "./weights.js";
+import { lackOfFitTest } from "./lackoffit.js";
 
 export function residuals(xData, yData, modelFn, params) {
   return xData.map((x, i) => yData[i] - modelFn(x, params));
@@ -403,8 +404,14 @@ export function fitModel(xData, yData, modelFn, is5PL, options = {}) {
   // Biological EC50 for 5PL (differs from parametric EC50 when S ≠ 1)
   const bioEC50 = is5PL ? computeBiologicalEC50(modelFn, best.params) : null;
 
+  // Whether the curve is ADEQUATE, as opposed to how tightly it fits. Needs
+  // replicates, so it self-reports as inapplicable rather than failing when
+  // the design cannot support it. Uses the same weights the fit minimised.
+  const lackOfFit = lackOfFitTest(xData, yData, yPred, k, { weights });
+
   return {
     ...best, r2, rmse, yPred, aicc, bic, aic, k, n, bioEC50, ...inference,
+    lackOfFit,
     ssr: ssrUnweighted, wssr,
     weighting: {
       requested: weighting || "none",
@@ -494,5 +501,9 @@ export function fitConstrainedModel(xData, yData, fixedMap) {
   return {
     params: fullParams, ssr: best.ssr, converged: best.converged,
     r2, rmse, yPred, aicc, bic, aic, k, n, bioEC50: null, ...inference,
+    // p is the number of FREE parameters, not the 4 display slots: a
+    // constrained fit spends fewer degrees of freedom, which leaves more for
+    // lack of fit and makes the test more sensitive, not less.
+    lackOfFit: lackOfFitTest(xData, yData, yPred, k),
   };
 }
