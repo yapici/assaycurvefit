@@ -9,6 +9,7 @@ import {
 } from "./inference.js";
 import { buildWeights, weightsConverged, estimateVariancePower } from "./weights.js";
 import { lackOfFitTest } from "./lackoffit.js";
+import { identifiabilityWarnings } from "./identifiability.js";
 
 export function residuals(xData, yData, modelFn, params) {
   return xData.map((x, i) => yData[i] - modelFn(x, params));
@@ -409,9 +410,16 @@ export function fitModel(xData, yData, modelFn, is5PL, options = {}) {
   // the design cannot support it. Uses the same weights the fit minimised.
   const lackOfFit = lackOfFitTest(xData, yData, yPred, k, { weights });
 
+  // Whether the parameters are IDENTIFIABLE, as opposed to how precise they
+  // look. Deliberately geometric, so it still reports when the covariance
+  // matrix came back singular -- which is itself the strongest such finding.
+  const identifiability = identifiabilityWarnings(
+    { params: best.params, ...inference }, xData, modelFn, { is5PL },
+  );
+
   return {
     ...best, r2, rmse, yPred, aicc, bic, aic, k, n, bioEC50, ...inference,
-    lackOfFit,
+    lackOfFit, identifiability,
     ssr: ssrUnweighted, wssr,
     weighting: {
       requested: weighting || "none",
@@ -505,5 +513,8 @@ export function fitConstrainedModel(xData, yData, fixedMap) {
     // constrained fit spends fewer degrees of freedom, which leaves more for
     // lack of fit and makes the test more sensitive, not less.
     lackOfFit: lackOfFitTest(xData, yData, yPred, k),
+    identifiability: identifiabilityWarnings(
+      { params: fullParams, ...inference }, xData, model4PL, { is5PL: false },
+    ),
   };
 }

@@ -19,3 +19,4 @@ export {
   WEIGHTING_TYPES, buildWeights, weightedSSR, weightsConverged, estimateVariancePower,
 } from "./weights.js";
 export { lackOfFitTest, describeLackOfFit } from "./lackoffit.js";
+export { identifiabilityWarnings } from "./identifiability.js";
