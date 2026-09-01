@@ -1282,28 +1282,63 @@ function rbFormatParam(v) {
   return Math.abs(v) < 0.01 || Math.abs(v) > 10000 ? v.toExponential(4) : v.toFixed(4);
 }
 
+// A confidence interval as a display string. Returns null rather than a
+// placeholder so callers can tell "no interval" from "an interval of --",
+// which is what decides whether a table grows a third column at all.
+function rbFormatCI(ci, dash = "\u2013") {
+  if (!ci || ci.lo == null || ci.hi == null) return null;
+  if (!isFinite(ci.lo) || !isFinite(ci.hi)) return null;
+  return `${rbFormatParam(ci.lo)} ${dash} ${rbFormatParam(ci.hi)}`;
+}
+
+// A p-value small enough that its digits are noise reads better as a bound.
+function rbFormatP(p) {
+  if (p == null || !isFinite(p)) return "--";
+  return p < 0.0001 ? "<0.0001" : p.toFixed(4);
+}
+
 function rbGetFitParamsRows(fitResult, modelType) {
   if (!fitResult) return [];
   const labels = modelType === "5PL"
     ? ["Bottom", "Hill", "EC50", "Top", "S (asymmetry)"]
     : ["A (min)", "B (slope)", "C (EC50)", "D (max)"];
-  const rows = labels.map((l, i) => [l, rbFormatParam(fitResult.params[i])]);
-  if (modelType === "5PL" && fitResult.bioEC50) rows.push(["Bio EC50", rbFormatParam(fitResult.bioEC50)]);
+  // Third element is the interval, which the renderers turn into a column when
+  // any row carries one. A fixed parameter has no interval -- it was asserted
+  // rather than estimated -- and correctly comes through as null.
+  const rows = labels.map((l, i) => [
+    l, rbFormatParam(fitResult.params[i]), rbFormatCI(fitResult.ci?.[i]),
+  ]);
+  if (modelType === "5PL" && fitResult.bioEC50) rows.push(["Bio EC50", rbFormatParam(fitResult.bioEC50), null]);
   return rows;
 }
 
 function rbGetGoFRows(fitResult) {
   if (!fitResult) return [];
-  return [
+  const rows = [
     ["R²",          fitResult.r2.toFixed(6)],
     ["RMSE",        fitResult.rmse.toFixed(6)],
     ["SSR",         fitResult.ssr.toExponential(4)],
+  ];
+  // Sy.x is the residual standard error, in the units of the response, which
+  // makes it the one spread figure a reader can compare against their own
+  // knowledge of the assay.
+  if (fitResult.syx != null) rows.push(["Sy.x", fitResult.syx.toFixed(6)]);
+  rows.push(
     ["AICc",        fitResult.aicc?.toFixed(2) ?? "--"],
     ["BIC",         fitResult.bic?.toFixed(2) ?? "--"],
     ["n (data pts)",String(fitResult.n)],
     ["k (params)",  String(fitResult.k)],
-    ["Converged",   fitResult.converged ? "Yes" : "No"],
-  ];
+  );
+  if (fitResult.dof != null) rows.push(["DOF", String(fitResult.dof)]);
+  // Whether the model is adequate, which is a different question from how
+  // tightly it fits and is not answered by any of the rows above.
+  const lof = fitResult.lackOfFit;
+  if (lof?.applicable) {
+    rows.push(["Lack of fit F", lof.F.toFixed(3)]);
+    rows.push(["Lack of fit p", rbFormatP(lof.pValue)]);
+  }
+  rows.push(["Converged",   fitResult.converged ? "Yes" : "No"]);
+  return rows;
 }
 
 // Render all report items to an offscreen canvas (used for PNG/PDF export)
@@ -1384,11 +1419,24 @@ async function rbDrawItemsToCanvas(ctx, items, page) {
   }
 }
 
+// Column proportions for a table that carries confidence intervals. Defined
+// once because the canvas exporter and the DOM preview must lay out
+// identically -- the editor is a WYSIWYG view of the exported page, so the two
+// drifting apart is a bug the user only discovers after exporting.
+// The interval column is the widest: it holds two numbers and a separator.
+const RB_CI_COLS = { label: 0.32, value: 0.26, ci: 0.42 };
+
 function rbDrawTableToCanvas(ctx, item, rows, title) {
   const { x, y, width: w, height: h } = item;
   const titleH = title ? 28 : 0;
-  const rowH   = Math.min(22, rows.length ? (h - titleH) / rows.length : 22);
   const pad    = 8;
+  // A third column appears only if something in this table has an interval to
+  // put in it, so a goodness-of-fit table keeps its two-column layout.
+  const hasCI  = rows.some(r => r[2] != null);
+  const headH  = hasCI ? 14 : 0;
+  const lines  = rows.length + (hasCI ? 1 : 0);
+  const rowH   = Math.min(22, lines ? (h - titleH) / lines : 22);
+
   ctx.fillStyle = "#f8fafd"; ctx.fillRect(x, y, w, h);
   ctx.strokeStyle = "#c8d8ec"; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
   if (title) {
@@ -1396,15 +1444,36 @@ function rbDrawTableToCanvas(ctx, item, rows, title) {
     ctx.fillStyle = "#fff"; ctx.font = "bold 11px Arial, sans-serif";
     ctx.textAlign = "left"; ctx.fillText(title, x + pad, y + titleH - 9);
   }
-  rows.forEach(([label, val], i) => {
-    const ry = y + titleH + i * rowH;
+
+  const inner = w - 2 * pad;
+  const valueRight = x + pad + inner * (RB_CI_COLS.label + RB_CI_COLS.value);
+  const headerH = hasCI ? Math.min(headH, rowH) : 0;
+
+  if (hasCI) {
+    // Without a header the third column is an unexplained pair of numbers.
+    const hy = y + titleH;
+    ctx.fillStyle = "rgba(40,80,140,0.08)"; ctx.fillRect(x, hy, w, headerH);
+    ctx.fillStyle = "#1a3a6a"; ctx.font = "bold 8px Arial, sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText("Value", valueRight, hy + headerH - 4);
+    ctx.fillText("95% CI", x + w - pad, hy + headerH - 4);
+  }
+
+  rows.forEach(([label, val, ci], i) => {
+    const ry = y + titleH + headerH + i * rowH;
     if (i % 2 === 0) { ctx.fillStyle = "rgba(200,220,240,0.18)"; ctx.fillRect(x, ry, w, rowH); }
     ctx.strokeStyle = "rgba(100,140,180,0.12)"; ctx.lineWidth = 0.5;
     ctx.beginPath(); ctx.moveTo(x, ry + rowH); ctx.lineTo(x + w, ry + rowH); ctx.stroke();
     ctx.fillStyle = "#446688"; ctx.font = "10px Arial, sans-serif"; ctx.textAlign = "left";
     ctx.fillText(label, x + pad, ry + rowH - 6);
     ctx.fillStyle = "#1a2a3a"; ctx.font = "bold 10px Arial, sans-serif"; ctx.textAlign = "right";
-    ctx.fillText(String(val), x + w - pad, ry + rowH - 6);
+    ctx.fillText(String(val), hasCI ? valueRight : x + w - pad, ry + rowH - 6);
+    if (hasCI) {
+      // Dimmer and unbolded: the interval qualifies the estimate beside it
+      // rather than competing with it for attention.
+      ctx.fillStyle = "#5a7a9a"; ctx.font = "9px Arial, sans-serif";
+      ctx.fillText(ci ?? "--", x + w - pad, ry + rowH - 6);
+    }
   });
 }
 
@@ -1413,8 +1482,18 @@ function rbDrawTableToCanvas(ctx, item, rows, title) {
 const RB_STAT_COLUMNS = [
   { key: "name",     label: "Molecule",   fmt: r => (r.name || "--").slice(0, 20) },
   { key: "ec50",     label: "EC50",       fmt: r => r.fitResult?.params?.[2] > 0 ? r.fitResult.params[2].toExponential(2) : "--" },
+  { key: "ec50_ci",  label: "EC50 95% CI",fmt: r => {
+      const ci = r.fitResult?.ci?.[2];
+      if (!ci || !isFinite(ci.lo) || !isFinite(ci.hi)) return "--";
+      return `${ci.lo.toExponential(1)}\u2013${ci.hi.toExponential(1)}`;
+    } },
   { key: "bio_ec50", label: "Bio EC50",   fmt: r => r.fitResult?.bioEC50  > 0 ? r.fitResult.bioEC50.toExponential(2) : "--" },
   { key: "hill",     label: "Hill",       fmt: r => r.fitResult?.params?.[1] != null ? r.fitResult.params[1].toFixed(3) : "--" },
+  { key: "hill_ci",  label: "Hill 95% CI",fmt: r => {
+      const ci = r.fitResult?.ci?.[1];
+      if (!ci || !isFinite(ci.lo) || !isFinite(ci.hi)) return "--";
+      return `${ci.lo.toFixed(2)}\u2013${ci.hi.toFixed(2)}`;
+    } },
   { key: "top",      label: "Top (D)",    fmt: r => r.fitResult?.params?.[3] != null ? r.fitResult.params[3].toFixed(3) : "--" },
   { key: "bottom",   label: "Bottom (A)", fmt: r => r.fitResult?.params?.[0] != null ? r.fitResult.params[0].toFixed(3) : "--" },
   { key: "s_param",  label: "S (asym)",   fmt: r => r.fitResult?.params?.length >= 5 ? r.fitResult.params[4].toFixed(3) : "--" },
@@ -1423,6 +1502,10 @@ const RB_STAT_COLUMNS = [
   { key: "aicc",     label: "AICc",       fmt: r => r.fitResult?.aicc != null ? r.fitResult.aicc.toFixed(2) : "--" },
   { key: "bic",      label: "BIC",        fmt: r => r.fitResult?.bic  != null ? r.fitResult.bic.toFixed(2)  : "--" },
   { key: "ssr",      label: "SSR",        fmt: r => r.fitResult?.ssr  != null ? r.fitResult.ssr.toExponential(2)  : "--" },
+  { key: "syx",      label: "Sy.x",       fmt: r => r.fitResult?.syx  != null ? r.fitResult.syx.toPrecision(3)   : "--" },
+  { key: "lof_p",    label: "LoF p",      fmt: r => r.fitResult?.lackOfFit?.applicable
+      ? (r.fitResult.lackOfFit.pValue < 0.0001 ? "<0.0001" : r.fitResult.lackOfFit.pValue.toFixed(4))
+      : "--" },
   { key: "model",    label: "Model",      fmt: r => r.modelType || "--" },
   { key: "n",        label: "n",          fmt: r => r.fitResult?.n != null ? String(r.fitResult.n) : "--" },
 ];
@@ -1629,15 +1712,37 @@ function RBItemContent({ item, isEditing, onChange, onStopEdit, getCompoundStyle
 }
 
 function RBDataTable({ rows, title }) {
+  // Mirrors rbDrawTableToCanvas exactly: the editor is a WYSIWYG preview of
+  // the exported page, so the two renderers have to make the same layout
+  // decision from the same data.
+  const hasCI = rows.some(r => r[2] != null);
+  const grid = hasCI
+    ? `${RB_CI_COLS.label * 100}% ${RB_CI_COLS.value * 100}% ${RB_CI_COLS.ci * 100}%`
+    : null;
+
   return (
     <div style={{ width: "100%", height: "100%", background: "#f8fafd", border: "1px solid #c8d8ec", overflow: "hidden", fontFamily: "Arial, sans-serif", boxSizing: "border-box" }}>
       {title && <div style={{ background: "#1a3a6a", color: "#fff", padding: "5px 8px", fontSize: 11, fontWeight: "bold" }}>{title}</div>}
+      {hasCI && (
+        <div style={{ display: "grid", gridTemplateColumns: grid, background: "rgba(40,80,140,0.08)", borderBottom: "1px solid rgba(100,140,180,0.15)", padding: "2px 8px" }}>
+          <span />
+          <span style={{ fontSize: 8, fontWeight: "bold", color: "#1a3a6a", textAlign: "right" }}>Value</span>
+          <span style={{ fontSize: 8, fontWeight: "bold", color: "#1a3a6a", textAlign: "right" }}>95% CI</span>
+        </div>
+      )}
       <div>
-        {rows.map(([label, val], i) => (
-          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "3px 8px", fontSize: 10,
+        {rows.map(([label, val, ci], i) => (
+          <div key={i} style={{
+            display: hasCI ? "grid" : "flex",
+            gridTemplateColumns: grid ?? undefined,
+            justifyContent: hasCI ? undefined : "space-between",
+            alignItems: "center", padding: "3px 8px", fontSize: 10,
             background: i % 2 === 0 ? "rgba(200,220,240,0.18)" : "transparent", borderBottom: "1px solid rgba(100,140,180,0.1)" }}>
             <span style={{ color: "#446688" }}>{label}</span>
-            <span style={{ color: "#1a2a3a", fontWeight: "bold", fontFamily: "monospace" }}>{val}</span>
+            <span style={{ color: "#1a2a3a", fontWeight: "bold", fontFamily: "monospace", textAlign: hasCI ? "right" : undefined }}>{val}</span>
+            {hasCI && (
+              <span style={{ color: "#5a7a9a", fontFamily: "monospace", fontSize: 9, textAlign: "right" }}>{ci ?? "--"}</span>
+            )}
           </div>
         ))}
       </div>
@@ -1877,12 +1982,25 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
     init.push({ id: id(), type: "text", page: 0, x: 40, y: 74, width: pw - 80, height: 20, content: `Generated: ${now}  |  Model: ${activeModel || "N/A"}`, fontSize: 10, fontWeight: "normal", fontStyle: "italic", color: "#667788", align: "left" });
     init.push({ id: id(), type: "divider", page: 0, x: 40, y: 100, width: pw - 80, height: 6, color: "#2a4a8a", thickness: 1 });
     if (chartDataUrl) {
-      init.push({ id: id(), type: "chart-image", page: 0, x: 40, y: 114, width: 478, height: 320, dataUrl: chartDataUrl, caption: "" });
+      // 388 wide, not 478: the parameters table beside it grew a
+      // confidence-interval column and the two would otherwise overlap.
+      init.push({ id: id(), type: "chart-image", page: 0, x: 40, y: 114, width: 388, height: 320, dataUrl: chartDataUrl, caption: "" });
     }
     if (fitResult && activeModel) {
-      const nRows = activeModel === "5PL" ? 6 : 5;
-      init.push({ id: id(), type: "fit-params", page: 0, x: 538, y: 114, width: 238, height: nRows * 24 + 36, fitResult, modelType: activeModel, title: `${activeModel} Parameters` });
-      init.push({ id: id(), type: "gof-table", page: 0, x: 538, y: 114 + nRows * 24 + 44, width: 238, height: 196, fitResult, modelType: activeModel, title: "Goodness of Fit" });
+      // Size both tables from the rows they will actually contain rather than
+      // from a guess at the model's parameter count. The row sets are no longer
+      // fixed -- a fit may or may not carry intervals, a lack-of-fit test or a
+      // biological EC50 -- and a stale estimate shows up as either a band of
+      // empty table or rows squeezed to illegibility.
+      const paramRows = rbGetFitParamsRows(fitResult, activeModel).length;
+      const gofRows   = rbGetGoFRows(fitResult).length;
+      // Rows + the interval column's header + the title bar, plus a little slack.
+      const paramsH = paramRows * 22 + 50;
+      const gofH    = gofRows * 20 + 34;
+      // Wider than the other auto-placed tables: the parameters table carries a
+      // confidence-interval column, which does not fit the 238px default.
+      init.push({ id: id(), type: "fit-params", page: 0, x: 438, y: 114, width: 338, height: paramsH, fitResult, modelType: activeModel, title: `${activeModel} Parameters` });
+      init.push({ id: id(), type: "gof-table", page: 0, x: 538, y: 114 + paramsH + 12, width: 238, height: gofH, fitResult, modelType: activeModel, title: "Goodness of Fit" });
     }
     if (allFitResults?.length > 0) {
       const tableY = chartDataUrl ? 448 : 114;
@@ -1957,8 +2075,8 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
       "overlay-chart":  { x: 40, y: 40, width: 480, height: 320, dataUrl: overlayChartDataUrl, caption: "" },
       "text":           { x: 40, y: 40, width: 320, height: 80,  content: "New text block", fontSize: 12, fontWeight: "normal", fontStyle: "normal", color: "#1a2a40", align: "left" },
       "heading":        { x: 40, y: 40, width: 420, height: 50,  content: "Section Heading", fontSize: 18, fontWeight: "bold",   fontStyle: "normal", color: "#0a1a3a", align: "left" },
-      "fit-params":     { x: 40, y: 40, width: 260, height: 180, fitResult, modelType: activeModel, title: `${activeModel || "Fit"} Parameters` },
-      "gof-table":      { x: 40, y: 40, width: 260, height: 210, fitResult, modelType: activeModel, title: "Goodness of Fit" },
+      "fit-params":     { x: 40, y: 40, width: 340, height: rbGetFitParamsRows(fitResult, activeModel).length * 22 + 50, fitResult, modelType: activeModel, title: `${activeModel || "Fit"} Parameters` },
+      "gof-table":      { x: 40, y: 40, width: 260, height: rbGetGoFRows(fitResult).length * 20 + 34, fitResult, modelType: activeModel, title: "Goodness of Fit" },
       "stats-table":    { x: 40, y: 40, width: pw - 80, height: 200, data: allFitResults, title: "Molecule Summary", columns: [...RB_DEFAULT_COLUMNS] },
       "divider":        { x: 40, y: 200, width: pw - 80, height: 6, color: "#cccccc", thickness: 1 },
     };
@@ -1983,13 +2101,14 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
         break;
       }
       case "mol-fit-params": {
-        const nRows = r.modelType === "5PL" ? 6 : 5;
-        data = { x: 40, y: 40, width: 260, height: nRows * 24 + 36, fitResult: r.fitResult, modelType: r.modelType,
+        data = { x: 40, y: 40, width: 340, height: rbGetFitParamsRows(r.fitResult, r.modelType).length * 22 + 50,
+          fitResult: r.fitResult, modelType: r.modelType,
           title: `${name} \u2014 ${r.modelType || "Fit"} Parameters`, moleculeIndex: molIndex, moleculeName: name };
         break;
       }
       case "mol-gof": {
-        data = { x: 40, y: 40, width: 260, height: 210, fitResult: r.fitResult, modelType: r.modelType,
+        data = { x: 40, y: 40, width: 260, height: rbGetGoFRows(r.fitResult).length * 20 + 34,
+          fitResult: r.fitResult, modelType: r.modelType,
           title: `${name} \u2014 Goodness of Fit`, moleculeIndex: molIndex, moleculeName: name };
         break;
       }
@@ -2016,15 +2135,17 @@ function ReportBuilder({ onClose, chartDataUrl, overlayChartDataUrl, fitResult, 
     let yPos = 40;
     // Chart
     const dataUrl = renderMolChart ? renderMolChart(molIndex) : null;
-    batch.push({ id: genId(), type: "mol-chart", page: activePage, x: 40, y: yPos, width: 480, height: 320,
+    batch.push({ id: genId(), type: "mol-chart", page: activePage, x: 40, y: yPos, width: 388, height: 320,
       dataUrl, caption: name, moleculeIndex: molIndex, moleculeName: name });
-    // Fit params (right of chart)
-    const nRows = r.modelType === "5PL" ? 6 : 5;
-    batch.push({ id: genId(), type: "mol-fit-params", page: activePage, x: 538, y: yPos, width: 238, height: nRows * 24 + 36,
+    // Fit params (right of chart) — sized from the rows it will hold, which now
+    // include a confidence-interval column.
+    const paramsH = rbGetFitParamsRows(r.fitResult, r.modelType).length * 22 + 50;
+    const gofH    = rbGetGoFRows(r.fitResult).length * 20 + 34;
+    batch.push({ id: genId(), type: "mol-fit-params", page: activePage, x: 438, y: yPos, width: 338, height: paramsH,
       fitResult: r.fitResult, modelType: r.modelType,
       title: `${name} \u2014 ${r.modelType || "Fit"} Parameters`, moleculeIndex: molIndex, moleculeName: name });
     // GoF (below fit params)
-    batch.push({ id: genId(), type: "mol-gof", page: activePage, x: 538, y: yPos + nRows * 24 + 44, width: 238, height: 210,
+    batch.push({ id: genId(), type: "mol-gof", page: activePage, x: 538, y: yPos + paramsH + 12, width: 238, height: gofH,
       fitResult: r.fitResult, modelType: r.modelType,
       title: `${name} \u2014 Goodness of Fit`, moleculeIndex: molIndex, moleculeName: name });
     yPos += 330;
@@ -3496,7 +3617,12 @@ export default function BioassayCurveFitter() {
           const pLabels = r.modelType === "5PL" ? ["Bottom","Hill","EC50","Top","S"] : ["A (min)","B (slope)","C (EC50)","D (max)"];
           pLabels.forEach((label, pi) => {
             const val = r.fitResult.params[pi];
-            if (val != null) addKeyVal(label, val.toExponential(4));
+            if (val == null) return;
+            const ci = r.fitResult.ci?.[pi];
+            const suffix = ci && isFinite(ci.lo) && isFinite(ci.hi)
+              ? `   [95% CI ${ci.lo.toExponential(3)} to ${ci.hi.toExponential(3)}]`
+              : "";
+            addKeyVal(label, val.toExponential(4) + suffix);
           });
           if (r.modelType === "5PL" && r.fitResult.bioEC50) {
             addKeyVal("Bio EC50", r.fitResult.bioEC50.toExponential(4));
@@ -3510,8 +3636,15 @@ export default function BioassayCurveFitter() {
           addKeyVal("SSR",    fmtStat("ssr",  r));
           addKeyVal("AICc",   fmtStat("aicc", r));
           addKeyVal("BIC",    fmtStat("bic",  r));
+          if (r.fitResult.syx != null) addKeyVal("Sy.x", r.fitResult.syx.toPrecision(4));
           if (r.fitResult.n != null)  addKeyVal("N data pts", String(r.fitResult.n));
           if (r.fitResult.k != null)  addKeyVal("K params",   String(r.fitResult.k));
+          if (r.fitResult.dof != null) addKeyVal("DOF",       String(r.fitResult.dof));
+          if (r.fitResult.lackOfFit?.applicable) {
+            const lof = r.fitResult.lackOfFit;
+            addKeyVal("Lack of fit F", lof.F.toFixed(3));
+            addKeyVal("Lack of fit p", lof.pValue < 0.0001 ? "<0.0001" : lof.pValue.toFixed(4));
+          }
           addKeyVal("Converged", r.fitResult.converged ? "Yes" : "No");
           y += 2;
 
@@ -3640,9 +3773,17 @@ export default function BioassayCurveFitter() {
         addKeyVal("Model Type", activeModel);
         if (pdfSections.modelParams) {
           const pLabels = activeModel === "5PL" ? ["Bottom","Hill","EC50","Top","S"] : ["A (min)","B (slope)","C (EC50)","D (max)"];
+          // An estimate without its interval invites the reader to treat it as
+          // exact, which is the whole reason the engine computes one. Spelled
+          // "to" rather than an en-dash because jsPDF's core fonts are Latin-1.
+          const ciText = (i) => {
+            const ci = fitResult.ci?.[i];
+            if (!ci || !isFinite(ci.lo) || !isFinite(ci.hi)) return "";
+            return `   [95% CI ${ci.lo.toExponential(3)} to ${ci.hi.toExponential(3)}]`;
+          };
           pLabels.forEach((label, i) => {
             const val = fitResult.params[i];
-            const suffix = fixedParams.has(i) ? "  [fixed]" : "";
+            const suffix = fixedParams.has(i) ? "  [fixed]" : ciText(i);
             addKeyVal(label, val.toExponential(6) + suffix);
           });
         }
@@ -3664,8 +3805,28 @@ export default function BioassayCurveFitter() {
         if (pdfSections.paramAIC) addKeyVal("AIC", fitResult.aic.toFixed(2));
         if (pdfSections.paramAICc) addKeyVal("AICc", fitResult.aicc.toFixed(2));
         if (pdfSections.paramBIC) addKeyVal("BIC", fitResult.bic.toFixed(2));
+        if (fitResult.syx != null) addKeyVal("Sy.x", fitResult.syx.toPrecision(6));
+        if (fitResult.dof != null) addKeyVal("DOF", String(fitResult.dof));
         if (pdfSections.paramConverged) addKeyVal("Converged", fitResult.converged ? "Yes" : "No");
         if (pdfSections.paramNK) { addKeyVal("N data points", fitResult.n); addKeyVal("K parameters", fitResult.k); }
+        y += 2;
+      }
+
+      // Lack of fit — a different question from the statistics above: not how
+      // closely the curve tracks the data, but whether its deviations exceed
+      // what the replicates say measurement error can explain.
+      if (pdfSections.fitParams && fitResult.lackOfFit?.applicable) {
+        const lof = fitResult.lackOfFit;
+        addSection("Lack of Fit (replicate-based F-test)");
+        addKeyVal("F", lof.F.toFixed(4));
+        addKeyVal("p-value", lof.pValue < 0.0001 ? "<0.0001" : lof.pValue.toFixed(4));
+        addKeyVal("DF (LoF, pure)", `${lof.dfLackOfFit}, ${lof.dfPureError}`);
+        addKeyVal("Pure error SD", lof.sdPureError.toPrecision(6));
+        addText(lof.significant
+          ? "Significant: the curve deviates from the replicate means by more than "
+            + "measurement error, so the model is missing real structure."
+          : "Not significant: scatter about the curve is consistent with the "
+            + "assay's own replicate noise.");
         y += 2;
       }
 
