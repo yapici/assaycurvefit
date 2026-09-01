@@ -23,3 +23,7 @@ export { identifiabilityWarnings } from "./identifiability.js";
 export {
   profileInterval, profileIntervals, bootstrapIntervals, fitModelWithIntervals,
 } from "./resample.js";
+export {
+  fitCurvePair, parallelismFTest, parallelismEquivalence, relativePotencyFrom,
+  relativePotency,
+} from "./potency.js";
