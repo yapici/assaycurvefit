@@ -7,7 +7,7 @@ export { model4PL, model5PL, makeConstrainedModel, getModelFn, computeBiological
 export { matMul, matTranspose, solveLU, matInverse } from "./linalg.js";
 export {
   residuals, sumSquaredResiduals, jacobian, withLogParams, levenbergMarquardt,
-  estimateInitialParams, fitModel, fitConstrainedModel,
+  estimateInitialParams, fitModel, fitConstrainedModel, makeFitConstraint,
 } from "./lm.js";
 export { rSquared, computeAIC, computeAICc, computeBIC, groupByConcentration } from "./stats.js";
 export { lnGamma, betaIncomplete, tCDF, tInv, fCDF, fPValue, fInv } from "./distributions.js";
@@ -20,3 +20,6 @@ export {
 } from "./weights.js";
 export { lackOfFitTest, describeLackOfFit } from "./lackoffit.js";
 export { identifiabilityWarnings } from "./identifiability.js";
+export {
+  profileInterval, profileIntervals, bootstrapIntervals, fitModelWithIntervals,
+} from "./resample.js";

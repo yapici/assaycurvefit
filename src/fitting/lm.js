@@ -199,6 +199,26 @@ export function estimateInitialParams(xData, yData, is5PL = false) {
 const EC50_INDEX = 2;
 
 /**
+ * Parameter constraint for a fit in log10(EC50) space.
+ *
+ * log10(EC50) needs no constraint of its own -- 10^t is positive for every
+ * real t -- so the only genuine bound is the 5PL asymmetry exponent S, which
+ * must stay positive for (1 + u)^S to be well defined.
+ *
+ * Exported because anything that re-optimises this model afterwards (profile
+ * likelihood, bootstrap) has to search under exactly the same constraints the
+ * original fit did, or its intervals describe a different problem.
+ */
+export function makeFitConstraint(is5PL) {
+  if (!is5PL) return null;
+  return (proposed, prev) => proposed.map((v, i) => {
+    if (!isFinite(v)) return prev[i];
+    if (i === 4 && v <= 0) return Math.abs(v) || 0.1;
+    return v;
+  });
+}
+
+/**
  * Put a 4PL solution into canonical form: Hill slope positive.
  *
  * The 4PL has an exact two-fold symmetry. Because
@@ -312,14 +332,7 @@ export function fitModel(xData, yData, modelFn, is5PL, options = {}) {
   ];
 
   const log = withLogParams(modelFn, [EC50_INDEX]);
-  // log10(EC50) needs no constraint; only the 5PL asymmetry S must stay positive.
-  const constrain = is5PL
-    ? (proposed, prev) => proposed.map((v, i) => {
-        if (!isFinite(v)) return prev[i];
-        if (i === 4 && v <= 0) return Math.abs(v) || 0.1;
-        return v;
-      })
-    : null;
+  const constrain = makeFitConstraint(is5PL);
 
   let best = null;
   for (const startParams of perturbations) {
