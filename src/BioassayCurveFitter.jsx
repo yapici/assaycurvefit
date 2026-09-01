@@ -51,7 +51,12 @@ function compoundToCSV(compound) {
   const header = `Concentration,${repHeaders}`;
   const rows = compound.points.map(p => {
     const repVals = p.reps.map(v => v.toString()).join(",");
-    return `${Math.pow(10, p.conc)},${repVals}`;
+    // Concentrations are stored as log10, so raising them back reintroduces
+    // binary-float noise: 0.03 round-trips to 0.029999999999999995. Trimming to
+    // 12 significant digits restores the entered value without touching any
+    // precision a plate reader could actually have produced.
+    const conc = Number(Math.pow(10, p.conc).toPrecision(12));
+    return `${conc},${repVals}`;
   });
   return [header, ...rows].join("\n");
 }
@@ -1263,6 +1268,50 @@ const EXAMPLE_DATASETS = {
 10,4.55
 100,4.90
 1000,4.98`,
+};
+
+// ── Two-curve examples ────────────────────────────────────────────
+// Prism-format multi-molecule CSVs, so these load through the same path as an
+// uploaded multi-compound file rather than into the single-curve textarea.
+//
+// Relative potency is a ratio, and a ratio only exists if the two curves have
+// the same SHAPE -- otherwise no single factor maps one dose axis onto the
+// other. These two pairs are the contrast that makes that concrete. Both share
+// the same reference curve and both have the test article about 4x more potent;
+// they differ only in whether the test curve's Hill slope matches.
+//
+// Generated from a 4PL (bottom 6, top 100, EC50 10 nM / 2.5 nM) with seeded
+// Gaussian noise at SD 2, then checked through the engine so the stated
+// conclusions are the ones the fitter actually reaches.
+const EXAMPLE_PAIRS = {
+  // Slopes 1.25 vs 1.25. Equivalence testing passes, and relative potency is
+  // reportable: RP 3.92, 95% CI 3.61-4.25.
+  "Parallel pair (4x potency)": `Concentration (nM),Reference,Reference,Reference,Test,Test,Test
+0.03,8,6.1,8.31,8.3,6.41,8.62
+0.1,6.03,6.2,6.79,7.38,7.55,8.15
+0.3,6.8,5.21,9.77,11.84,10.26,14.81
+1,10.92,8.5,11.18,28.6,26.18,28.86
+3,19.81,25.34,24.97,55.06,60.59,60.22
+10,55.76,55.18,53.98,88.64,88.06,86.86
+30,81.3,78.29,82.15,96.26,93.26,97.12
+100,97.94,90.49,97.21,102.02,94.57,101.29
+300,99.3,96.72,99.54,100.38,97.81,100.63`,
+
+  // Same reference, same ~4x shift, but the test curve is far steeper (fitted
+  // Hill 3.23 against 1.19). Equivalence fails on the slope criterion, so the
+  // potency ratio -- which still computes, and still looks plausible at 3.97 --
+  // is not reportable. That is the failure this example exists to show: the
+  // number looks fine, and means nothing.
+  "Non-parallel pair (slope differs)": `Concentration (nM),Reference,Reference,Reference,Test,Test,Test
+0.03,8,6.1,8.31,7.93,6.03,8.25
+0.1,6.03,6.2,6.79,5.74,5.91,6.51
+0.3,6.8,5.21,9.77,5.84,4.25,8.81
+1,10.92,8.5,11.18,12.08,9.66,12.34
+3,19.81,25.34,24.97,61.87,67.4,67.03
+10,55.76,55.18,53.98,101.1,100.52,99.33
+30,81.3,78.29,82.15,100.22,97.22,101.08
+100,97.94,90.49,97.21,102.95,95.49,102.21
+300,99.3,96.72,99.54,100.62,98.04,100.86`,
 };
 
 const SAMPLE_DATA = EXAMPLE_DATASETS["Full sigmoid (5 reps, outliers)"];
@@ -4115,6 +4164,46 @@ export default function BioassayCurveFitter() {
     reader.readAsText(file);
   }, [loadCompound]);
 
+  // Load a named example from either bank. Two-curve examples go through the
+  // same path as an uploaded multi-compound CSV, and open in overlay mode --
+  // a parallelism example that shows one curve at a time buries its own point.
+  const loadExample = useCallback((name) => {
+    setFixedMin("");
+    setFixedMax("");
+    if (EXAMPLE_PAIRS[name]) {
+      try {
+        const compounds = parsePrismCSV(EXAMPLE_PAIRS[name]);
+        setMultiData(compounds);
+        setMultiIndex(0);
+        setMultiCsvError(null);
+        setOverlayMode(true);
+        loadCompound(compounds[0]);
+      } catch (err) {
+        setMultiCsvError(err.message);
+        setMultiData(null);
+      }
+      return;
+    }
+    const csv = EXAMPLE_DATASETS[name];
+    if (!csv) return;
+    // Clearing any loaded pair matters: otherwise picking a single-curve
+    // example leaves the app in multi-compound mode, showing a compound
+    // switcher and an overlay built from the previous example's data.
+    setMultiData(null);
+    setMultiIndex(0);
+    setMultiCsvError(null);
+    setRawData(csv);
+    setParsedData(null);
+    setFitResult(null);
+    setComparison(null);
+    setError(null);
+    setGrubbsResults(null);
+    setShowOutliers(false);
+    setSelectedGrubbsGroup(null);
+    setExcludedIndices(new Set());
+    setBgStats(null);
+  }, [loadCompound]);
+
   useEffect(() => {
     if (!multiData) return;
     const handler = (e) => {
@@ -4209,20 +4298,7 @@ export default function BioassayCurveFitter() {
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <select
                 onChange={(e) => {
-                  if (e.target.value && EXAMPLE_DATASETS[e.target.value]) {
-                    setRawData(EXAMPLE_DATASETS[e.target.value]);
-                    setParsedData(null);
-                    setFitResult(null);
-                    setComparison(null);
-                    setError(null);
-                    setGrubbsResults(null);
-                    setShowOutliers(false);
-                    setSelectedGrubbsGroup(null);
-                    setExcludedIndices(new Set());
-                    setBgStats(null);
-                    setFixedMin("");
-                    setFixedMax("");
-                  }
+                  if (e.target.value) loadExample(e.target.value);
                   e.target.value = "";
                 }}
                 style={{
@@ -4239,9 +4315,16 @@ export default function BioassayCurveFitter() {
                 }}
               >
                 <option value="">Examples…</option>
-                {Object.keys(EXAMPLE_DATASETS).map(name => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
+                <optgroup label="Single curve">
+                  {Object.keys(EXAMPLE_DATASETS).map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </optgroup>
+                <optgroup label="Two curves (parallelism)">
+                  {Object.keys(EXAMPLE_PAIRS).map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </optgroup>
               </select>
               {/* Multi-Compound CSV upload button */}
               <button
