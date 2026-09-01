@@ -17,10 +17,14 @@ import { fitModel, model4PL } from "./fitting/index.js";
 | `linalg.js` | `matMul`, `matTranspose`, `solveLU` — dense helpers for the normal equations |
 | `lm.js` | `residuals`, `jacobian`, `levenbergMarquardt`, `estimateInitialParams`, `fitModel`, `fitConstrainedModel` |
 | `stats.js` | `rSquared`, `computeAIC`/`AICc`/`BIC`, `groupByConcentration` |
-| `distributions.js` | `lnGamma`, `betaIncomplete`, `tCDF`, `tInv` |
+| `distributions.js` | `lnGamma`, `betaIncomplete`, `tCDF`, `tInv`, `fCDF`, `fPValue`, `fInv` |
 | `outliers.js` | `grubbsCriticalG`, `grubbsTest`, `runGrubbsAllGroups` |
 | `inference.js` | `parameterCovariance`, `parameterIntervals`, `correlationMatrix`, `backTransformLog10` |
 | `weights.js` | `buildWeights`, `weightedSSR`, `weightsConverged`, `estimateVariancePower` |
+| `lackoffit.js` | `lackOfFitTest`, `describeLackOfFit` — is the model adequate? |
+| `identifiability.js` | `identifiabilityWarnings` — are the parameters actually determined? |
+| `resample.js` | `profileInterval`, `bootstrapIntervals`, `fitModelWithIntervals` |
+| `potency.js` | `fitCurvePair`, `parallelismFTest`, `parallelismEquivalence`, `relativePotency` |
 
 ## Model conventions
 
@@ -221,20 +225,132 @@ including the `n−p` divisor. And by **simulated coverage**: over 300 seeded
 Gaussian datasets, nominal 95% intervals cover the true value 95.0% (A), 94.0%
 (Hill), 95.3% (EC50) and 94.7% (D) of the time.
 
+The F distribution is cross-checked against the t implementation through
+`F(1, df) = t(df)²`, and against published critical values. The lack-of-fit
+test is checked for **calibration**, not just direction: over 200 seeded
+datasets from the correct model it flags 1–12%, bracketing the nominal 5%.
+The profile interval is pinned against the Wald interval on a model linear in
+its parameters, where the two must agree *exactly*, and the joint potency model
+against noiseless data, where the ratio must come back exact under every
+weighting scheme.
+
 Tests marked `it.fails(...)` document a known defect: they assert the *correct*
 behaviour and are expected to fail until it is fixed. When you fix one, flip it
 back to `it(...)` in the same commit.
 
+## Adequacy and identifiability
+
+`fitModel` attaches two diagnostics that answer questions the goodness-of-fit
+numbers cannot.
+
+`lackOfFit` partitions the residual sum of squares using the replicates.
+Scatter between replicates at one concentration is pure measurement error and
+owes nothing to the model, so whatever variation is left over is the curve's
+fault:
+
+```
+SSR  =  SS(pure error)  +  SS(lack of fit)
+```
+
+The ratio of their mean squares is an F-statistic; under a correct model both
+estimate the same variance and F ≈ 1. This is the question R² does not answer.
+A precise assay can show R² = 0.999 and still fail decisively, because the
+deviations, though small, are far larger than that assay's own noise. The
+result carries a per-concentration breakdown sorted by contribution, so a
+misfit is localised to a dose. It reports `applicable: false` with a reason
+when the design cannot support it — no replicates, or no more concentrations
+than parameters.
+
+`identifiability` asks whether the parameters were determined at all. Its
+checks are geometric rather than statistical, computed from the fitted curve
+and the dose range, which means they still work when the covariance matrix is
+singular — precisely the case where something has gone wrong. It flags a
+plateau the doses never reach (and names how many decades would bracket it,
+solved from the curve), an EC50 outside the tested range, near-collinear
+parameter pairs, a Hill slope interval spanning zero, and a design with no
+more doses than parameters. Parameters the caller fixed are skipped: they were
+asserted, not estimated.
+
+## Intervals beyond Wald
+
+The standard errors in `inference.js` linearise the model at the solution. For
+a model linear in its parameters that is exact; for the 4PL it is an
+approximation that fails in one direction — **symmetric and too narrow**.
+
+`fitModelWithIntervals` is a drop-in replacement for `fitModel` that adds
+honest intervals:
+
+```js
+const fit = fitModelWithIntervals(x, y, model4PL, false, { intervals: "both" });
+fit.profile.ci[2]        // asymmetric EC50 interval
+fit.profile.bounded[0]   // { lo: false, hi: true } — unbounded below
+fit.bootstrap.bias[1]    // is the estimator itself skewed here?
+```
+
+**Profile likelihood** walks each parameter away from its estimate,
+re-optimising the others at every step, and finds where the sum of squares
+crosses `SSR_min · (1 + t²/(n−p))`. It follows the real shape of the
+likelihood, so it returns asymmetric intervals and can report an endpoint as
+*unbounded* rather than inventing one. **Bootstrap** resamples residuals —
+weighted ones under a weighted fit, inflated by `√(n/(n−p))` to undo
+least-squares shrinkage — and reads the interval off the percentiles.
+
+Both are opt-in, because both cost hundreds of refits. On a well-bracketed
+curve they reproduce the Wald interval and buy nothing. As the bottom plateau
+is pushed out of the dose range they diverge monotonically: at the extreme the
+profile interval is many times wider and runs almost entirely to one side.
+
+## Relative potency and parallelism
+
+Relative potency exists only if the two curves have the same shape. Otherwise
+no single factor maps one dose axis onto the other, and the ratio is an
+artefact of which part of the curve was examined. Parallelism is a
+precondition, not a footnote.
+
+```js
+const r = relativePotency(reference, test, {
+  bounds: { slope: 0.3, lower: 10, upper: 10 },   // from historical data
+});
+r.potency.rp        // EC50(reference) / EC50(test); > 1 means more potent
+r.potency.ci        // asymmetric on the ratio scale, always positive
+r.reportable        // did parallelism actually pass?
+```
+
+The parallel model carries **log10(RP) as a fitted parameter**, so the quantity
+of interest gets its own standard error rather than being rebuilt from two
+correlated EC50s. Exponentiating its log-scale interval is what makes the
+result asymmetric and strictly positive.
+
+Two parallelism verdicts are reported:
+
+- **F-test** — compares the common-shape fit against the unconstrained one.
+  Included because SOPs still specify it, and flagged because its logic is
+  inverted: the null hypothesis is parallelism, so *failing to reject* is what
+  passes, and an imprecise assay passes easily. The tests pin this directly —
+  identical non-parallelism, detected in a precise assay and missed in a noisy
+  one.
+- **Equivalence (USP <1032>)** — requires the 90% interval on each shape
+  difference to fall inside pre-specified bounds. A more precise assay now
+  passes more easily, which is the right incentive.
+
+`reportable` keys off equivalence. **Without acceptance criteria there is no
+verdict, and potency is not reportable even when the F-test says "parallel"** —
+criteria come from historical reference-standard data during validation, so
+there is no defensible default to substitute. The ratio is still computed, so
+nobody has to recompute it by hand.
+
+Weights, when requested, are derived once and held fixed across both fits: the
+F-test compares two sums of squares, which are only comparable if both were
+minimised under the same metric.
+
 ## Not yet implemented
 
-- **Replicate-based lack-of-fit F-test.** `groupByConcentration` already yields
-  the per-group spread needed to split residual SS into pure error and
-  lack-of-fit, which answers "is this model adequate?" far better than R².
-- **Identifiability warnings** when the data do not bracket a plateau, so an
-  extrapolated Top/Bottom cannot be mistaken for a measured one. The
-  `correlation` matrix already exposes the raw signal.
-- **Profile-likelihood or bootstrap intervals**, for the cases where the Wald
-  interval is too optimistic.
-- **Relative potency and parallelism** (USP <1032>/<1034>): common-slope fits
-  across a test and reference curve, equivalence-based parallelism, and a
-  potency ratio with a confidence interval.
+- **5PL relative potency.** `potency.js` fits 4PL curve pairs only; the 5PL's
+  asymmetry exponent would need to join the common-shape constraint.
+- **Non-sigmoid parallel-line and parallel-ratio models** for assays whose
+  usable range is linear rather than sigmoid.
+- **ROUT outlier detection**, which identifies outliers against the fitted
+  curve rather than within concentration groups as Grubbs does.
+- **Equivalence bounds derived from historical data** — the module consumes
+  bounds but has nowhere to store or accumulate the reference-standard history
+  they should come from.
